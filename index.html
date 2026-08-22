@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0d0f14">
+<meta name="description" content="Offline music library with loudness (EBU R128) and quality normalization.">
+<title>Offline Music</title>
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="icon" href="./icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="./icons/icon-192.png">
+<link rel="stylesheet" href="./css/app.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M12 3v10.6A4 4 0 1 0 14 17V7h4V3z"/></svg>
+    <span>Offline Music</span>
+  </div>
+  <div class="search">
+    <input id="search" type="search" placeholder="Search title, artist, album…" autocomplete="off" spellcheck="false">
+  </div>
+  <div class="topbar-actions">
+    <div class="menu-wrap">
+      <button id="btn-add-album" class="btn primary" aria-haspopup="true" aria-expanded="false"
+              title="Add a whole album from a folder or a .zip">Add album ▾</button>
+      <div id="add-album-menu" class="menu hidden" role="menu">
+        <button class="menu-item" data-source="folder" role="menuitem">
+          <b>From a folder</b><span>Every audio file in it, in folder order</span>
+        </button>
+        <button class="menu-item" data-source="zip" role="menuitem">
+          <b>From a .zip archive</b><span>Unpacked on this device, nothing is uploaded</span>
+        </button>
+      </div>
+    </div>
+    <button id="btn-add-track" class="btn" title="Add individual tracks">Add track</button>
+  </div>
+</header>
+
+<nav class="tabs" role="tablist">
+  <button class="tab is-active" data-view="tracks" role="tab">Tracks</button>
+  <button class="tab" data-view="albums" role="tab">Albums</button>
+  <button class="tab" data-view="quality" role="tab">Quality</button>
+  <button class="tab" data-view="settings" role="tab">Settings</button>
+</nav>
+
+<main id="main">
+
+  <!-- TRACKS -->
+  <section class="view is-active" data-view="tracks">
+    <div class="toolbar">
+      <div class="chips" id="track-filters">
+        <button class="chip is-active" data-filter="all">All</button>
+        <button class="chip" data-filter="unanalyzed">Not analyzed</button>
+        <button class="chip" data-filter="loud">Off-target loudness</button>
+        <button class="chip" data-filter="lowq">Below quality target</button>
+      </div>
+      <div class="grow"></div>
+      <label class="sort">Sort
+        <select id="track-sort">
+          <option value="addedAt">Recently added</option>
+          <option value="title">Title</option>
+          <option value="artist">Artist</option>
+          <option value="album">Album</option>
+          <option value="lufs">Loudness</option>
+          <option value="score">Quality score</option>
+        </select>
+      </label>
+      <button id="btn-analyze-all" class="btn">Analyze pending</button>
+      <button id="btn-select" class="btn" aria-pressed="false">Select</button>
+    </div>
+    <div id="selection-bar" class="selection-bar hidden">
+      <span id="sel-count">0 selected</span>
+      <div class="grow"></div>
+      <button id="btn-sel-all" class="btn">Select all</button>
+      <button id="btn-sel-none" class="btn">Clear</button>
+      <button id="btn-sel-delete" class="btn danger">Delete selected</button>
+      <button id="btn-sel-exit" class="btn">Done</button>
+    </div>
+    <div id="track-list" class="track-list"></div>
+    <div id="tracks-empty" class="empty">
+      <h2>No music yet</h2>
+      <p>Add a folder, a <b>.zip</b>, or single tracks — everything is stored on this device and nothing is uploaded.</p>
+      <p>Each file is decoded once to measure <b>EBU R128 loudness</b>, true peak, and spectral quality.</p>
+      <div class="row" style="justify-content:center">
+        <button class="btn primary" data-act="album">Add album</button>
+        <button class="btn" data-act="track">Add track</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ALBUMS -->
+  <section class="view" data-view="albums">
+    <div class="toolbar">
+      <div class="grow"></div>
+      <button id="btn-album-back" class="btn hidden">← All albums</button>
+    </div>
+    <div id="album-grid" class="album-grid"></div>
+    <div id="album-detail" class="album-detail hidden"></div>
+  </section>
+
+  <!-- QUALITY -->
+  <section class="view" data-view="quality">
+    <div class="quality-summary" id="quality-summary"></div>
+    <div class="panel">
+      <div class="panel-head">
+        <h3>Loudness distribution</h3>
+        <span class="muted">Target <b id="q-target-lufs">-14</b> LUFS</span>
+      </div>
+      <div id="lufs-chart" class="chart"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <h3>Quality outliers</h3>
+        <button id="btn-normalize-quality" class="btn primary">Normalize selected quality</button>
+      </div>
+      <p class="muted small">Files that differ from the encoding target. Normalizing re-encodes them
+      (resample / downmix / re-encode) and keeps the original unless you disable that in Settings.</p>
+      <div id="quality-list" class="track-list compact"></div>
+    </div>
+  </section>
+
+  <!-- SETTINGS -->
+  <section class="view" data-view="settings">
+    <div class="panel">
+      <h3>Loudness normalization</h3>
+      <div class="field">
+        <label for="set-mode">Mode</label>
+        <select id="set-mode">
+          <option value="track">Per track (every song equally loud)</option>
+          <option value="album">Per album (keeps album dynamics)</option>
+          <option value="off">Off</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="set-target">Target loudness <span class="muted" id="set-target-val"></span></label>
+        <input id="set-target" type="range" min="-30" max="-5" step="0.5">
+        <p class="hint">-14 LUFS matches streaming services, -23 LUFS is broadcast (EBU R128), -18 is a good headroom-friendly middle.</p>
+      </div>
+      <div class="field">
+        <label for="set-ceiling">True-peak ceiling <span class="muted" id="set-ceiling-val"></span></label>
+        <input id="set-ceiling" type="range" min="-6" max="0" step="0.1">
+        <p class="hint">Gain is reduced automatically so playback never exceeds this peak.</p>
+      </div>
+      <label class="switch"><input id="set-peaksafe" type="checkbox"><span>Never exceed ceiling (lower gain instead)</span></label>
+      <label class="switch"><input id="set-limiter" type="checkbox"><span>Safety limiter on output</span></label>
+    </div>
+
+    <div class="panel">
+      <h3>Quality target</h3>
+      <div class="field">
+        <label for="set-codec">Encode to</label>
+        <select id="set-codec">
+          <option value="opus">Opus in Ogg (small, best quality per byte)</option>
+          <option value="wav">WAV 16-bit PCM (lossless, large)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="set-bitrate">Opus bitrate <span class="muted" id="set-bitrate-val"></span></label>
+        <input id="set-bitrate" type="range" min="48" max="256" step="8">
+      </div>
+      <div class="field">
+        <label for="set-rate">Sample rate</label>
+        <select id="set-rate">
+          <option value="48000">48 kHz</option>
+          <option value="44100">44.1 kHz</option>
+          <option value="0">Keep original</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="set-channels">Channels</label>
+        <select id="set-channels">
+          <option value="2">Stereo</option>
+          <option value="1">Mono</option>
+          <option value="0">Keep original</option>
+        </select>
+      </div>
+      <label class="switch"><input id="set-bake" type="checkbox"><span>Bake loudness gain into re-encoded files</span></label>
+      <label class="switch"><input id="set-keep" type="checkbox"><span>Keep original file after normalizing</span></label>
+      <label class="switch"><input id="set-upscale" type="checkbox"><span>Also re-encode files that are already better than target</span></label>
+    </div>
+
+    <div class="panel">
+      <h3>Artwork</h3>
+      <div class="field">
+        <label for="set-art">Cover size <span class="muted" id="set-art-val"></span></label>
+        <input id="set-art" type="range" min="256" max="1024" step="64">
+      </div>
+      <div class="field">
+        <label for="set-thumb">Thumbnail size <span class="muted" id="set-thumb-val"></span></label>
+        <input id="set-thumb" type="range" min="64" max="256" step="16">
+      </div>
+      <div class="field">
+        <label for="set-artq">Image quality <span class="muted" id="set-artq-val"></span></label>
+        <input id="set-artq" type="range" min="0.5" max="1" step="0.05">
+      </div>
+      <div class="row">
+        <button id="btn-renorm-art" class="btn">Re-normalize all artwork</button>
+        <button id="btn-repair-art" class="btn">Repair covers from files</button>
+      </div>
+      <p class="hint">Repair re-reads the cover embedded in each audio file and reassigns it —
+      use it if a track is showing another album's cover.</p>
+    </div>
+
+    <div class="panel">
+      <h3>Storage</h3>
+      <div id="storage-info" class="muted"></div>
+      <div class="row">
+        <button id="btn-persist" class="btn">Request persistent storage</button>
+        <button id="btn-export" class="btn">Export library metadata</button>
+        <button id="btn-wipe" class="btn danger">Delete everything</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>About</h3>
+      <p class="muted small">
+        Loudness follows ITU-R BS.1770-4 / EBU R128: K-weighted gated integrated loudness (LUFS),
+        loudness range (LRA) and 4× oversampled true peak. Album gain is recomputed from the gated
+        block histogram of every track in the album, not averaged.
+        Quality detection measures effective bandwidth (spectral cutoff), clipping, crest factor and bitrate.
+        Everything runs locally; the service worker makes the app itself work offline.
+      </p>
+      <p class="muted small" id="build-info"></p>
+    </div>
+  </section>
+</main>
+
+<!-- PLAYER -->
+<footer class="player" id="player" hidden>
+  <img id="p-art" class="p-art" alt="">
+  <div class="p-meta">
+    <div class="p-title" id="p-title"></div>
+    <div class="p-sub" id="p-sub"></div>
+  </div>
+  <div class="p-controls">
+    <button id="p-prev" class="icon" title="Previous">⏮</button>
+    <button id="p-play" class="icon play" title="Play/Pause">▶</button>
+    <button id="p-next" class="icon" title="Next">⏭</button>
+  </div>
+  <div class="p-seek">
+    <span id="p-cur">0:00</span>
+    <input id="p-range" type="range" min="0" max="1000" value="0">
+    <span id="p-dur">0:00</span>
+  </div>
+  <div class="p-right">
+    <span class="gain-badge" id="p-gain" title="Applied normalization gain">0.0 dB</span>
+    <button id="p-shuffle" class="icon" title="Shuffle">🔀</button>
+    <button id="p-repeat" class="icon" title="Repeat">🔁</button>
+    <input id="p-vol" type="range" min="0" max="1" step="0.01" value="1" title="Volume">
+  </div>
+</footer>
+
+<div id="toasts" class="toasts"></div>
+
+<div id="progress" class="progress hidden">
+  <div class="progress-inner">
+    <div class="progress-label" id="progress-label">Working…</div>
+    <div class="bar"><div class="bar-fill" id="progress-bar"></div></div>
+    <div class="progress-sub muted small" id="progress-sub"></div>
+    <button id="progress-cancel" class="btn">Cancel</button>
+  </div>
+</div>
+
+<dialog id="dlg" class="dlg"></dialog>
+
+<input id="file-input" type="file" accept="audio/*,.mp3,.m4a,.aac,.flac,.ogg,.oga,.opus,.wav,.wma,.aiff,.aif,.zip" multiple hidden>
+<input id="dir-input" type="file" webkitdirectory directory multiple hidden>
+<input id="zip-input" type="file" accept=".zip,.zipx,application/zip,application/x-zip-compressed" multiple hidden>
+<input id="img-input" type="file" accept="image/*" hidden>
+
+<script type="module" src="./js/app.js"></script>
+</body>
+</html>
