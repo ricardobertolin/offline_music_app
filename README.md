@@ -57,12 +57,25 @@ Click an album to open just its tracks. Inside:
   wrong; the folder rarely is. You can switch to track number from tags, to title, or
   **drag any row** to build a custom order, which is stored per album and survives
   reloads, re-analysis, renames and later imports (new tracks join the end).
-- **Rename album** rewrites the album name and album artist across every track in it.
+- **Edit album…** sets the album name and album artist across every track in it, with an
+  opt-in to push that artist down onto each track's own artist too — right for a
+  single-artist album, wrong for a compilation, so it is a choice rather than a default.
   Renaming onto an existing album merges the two.
 - An untagged file is filed under **the folder it came from** rather than a single giant
   "Unknown Album", and dropping a folder onto the window imports the whole tree with its
   paths intact.
 - **Delete album** removes every track in it, its audio, and any artwork left orphaned.
+
+### Editing tags
+**⋮ → Edit details** on any track edits title, artist, album, album artist, track and disc
+number, year and genre. The album key is derived from album/album artist, so changing
+either *moves* the track — both the album it left and the album it joined are recounted
+immediately. Blank values fall back (`Unknown Artist`, the file name) rather than leaving
+an unreachable entry.
+
+To fix many tracks at once, use **Select → Set artist…**: it pre-fills when the selection
+already shares an artist, says how many artists it spans when it doesn't, and can set the
+album artist to match in the same pass.
 
 ### Deleting
 
@@ -101,9 +114,9 @@ are supported, along with ZIP64 and UTF-8 entry names; each entry keeps its path
 zipped album orders and names itself exactly like a real folder would.
 
 - **Tracks** — everything, searchable, with filters for *not analyzed*, *off-target
-  loudness* and *below quality target*, plus multi-select for bulk deletion
-- **Albums** — cover grid; click through to an album to reorder, rename, set a cover,
-  play it, or normalize the whole thing
+  loudness* and *below quality target*, plus multi-select for bulk artist edits and deletion
+- **Albums** — cover grid; click through to an album to reorder, edit its name and artist,
+  set a cover, play it, or normalize the whole thing
 - **Quality** — library statistics, loudness distribution, and the batch normalizer
 - **Settings** — target loudness and ceiling, track/album/off mode, limiter, encoding
   target, artwork sizes, storage
@@ -134,8 +147,9 @@ ZIP64, UTF-8 names, trailing comments and corrupt entries.
 
 The UI test imports synthetic files into a real IndexedDB, then exercises album opening,
 every sort mode, drag-to-reorder, renaming, multi-select with shift-ranges, bulk deletion,
-album deletion, artwork ownership and importing an album from a .zip — including checking
-that no audio blobs or covers are left behind.
+album deletion, artwork ownership, tag editing (including a track moving between albums)
+and importing an album from a .zip — checking along the way that no audio blobs or covers
+are left behind.
 
 On `localhost` the service worker fetches from the network first, so a reload always
 shows the code you just edited; on a real host it stays cache-first for offline use.

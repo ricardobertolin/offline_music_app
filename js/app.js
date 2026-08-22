@@ -106,6 +106,7 @@ function bindUI() {
   $('#btn-sel-exit').addEventListener('click', () => setSelectMode(false));
   $('#btn-sel-all').addEventListener('click', () => selectAllVisible(true));
   $('#btn-sel-none').addEventListener('click', () => selectAllVisible(false));
+  $('#btn-sel-artist').addEventListener('click', openBulkArtistDialog);
   $('#btn-sel-delete').addEventListener('click', deletePicked);
 
   $('#track-list').addEventListener('click', onTrackListClick);
@@ -396,6 +397,7 @@ function updateSelectionBar() {
   const bytes = state.tracks.filter((t) => state.picked.has(t.id)).reduce((a, t) => a + (t.size || 0), 0);
   $('#sel-count').textContent = n ? `${n} selected · ${fmtBytes(bytes)}` : 'Nothing selected';
   $('#btn-sel-delete').disabled = !n;
+  $('#btn-sel-artist').disabled = !n;
 }
 
 function selectAllVisible(on) {
@@ -541,7 +543,7 @@ function renderAlbumDetail(key) {
         </div>
         <div class="row">
           <button class="btn primary" data-album-act="play">Play album</button>
-          <button class="btn" data-album-act="rename">Rename album…</button>
+          <button class="btn" data-album-act="rename">Edit album…</button>
           <button class="btn" data-album-act="art">Set album cover</button>
           <button class="btn" data-album-act="normalize">Normalize album quality</button>
           <button class="btn danger" data-album-act="delete">Delete album</button>
@@ -564,7 +566,7 @@ function renderAlbumDetail(key) {
     e.stopPropagation();
     const act = btn.dataset.albumAct;
     if (act === 'play' && tracks.length) playTrack(tracks[0].id, tracks.map((t) => t.id));
-    if (act === 'rename') openAlbumRenameDialog(album);
+    if (act === 'rename') openAlbumEditDialog(album);
     if (act === 'art') pickArtFor({ albumKey: key });
     if (act === 'normalize') normalizeTracks(tracks.filter((t) => lib.needsQualityNormalization(t, state.settings)));
     if (act === 'delete') deleteAlbumByKey(key);
@@ -613,50 +615,151 @@ function enableDragOrder(list, onCommit) {
   });
 }
 
-function openAlbumRenameDialog(album) {
+/**
+ * Small reusable edit form.
+ * @param {object} o
+ * @param {string} o.title
+ * @param {string} [o.hint]
+ * @param {Array<{key,label,value,type?,hint?,span?}>} o.fields
+ * @param {(values:object)=>Promise<void>} o.onSave
+ */
+function formDialog({ title, hint, fields, saveLabel = 'Save', onSave }) {
   const dlg = $('#dlg');
+  const inputId = (f) => `f-${f.key}`;
+
   dlg.innerHTML = `<div class="dlg-body">
-    <h3>Rename album</h3>
-    <p class="muted small">Applies to all ${album.trackCount} track${album.trackCount === 1 ? '' : 's'} in this album.
-    Useful for untagged folders, which are named after the folder they came from.</p>
-    <div class="field">
-      <label for="ren-name">Album name</label>
-      <input id="ren-name" class="text" type="text" value="${escapeHtml(album.name)}" autocomplete="off">
-    </div>
-    <div class="field">
-      <label for="ren-artist">Album artist</label>
-      <input id="ren-artist" class="text" type="text" value="${escapeHtml(album.artist)}" autocomplete="off">
+    <h3>${escapeHtml(title)}</h3>
+    ${hint ? `<p class="muted small">${hint}</p>` : ''}
+    <div class="form-grid">
+      ${fields.map((f) => (f.type === 'checkbox'
+    ? `<label class="switch span2"><input id="${inputId(f)}" type="checkbox"${f.value ? ' checked' : ''}>
+         <span>${escapeHtml(f.label)}</span></label>`
+    : `<div class="field${f.span ? ' span2' : ''}">
+         <label for="${inputId(f)}">${escapeHtml(f.label)}</label>
+         <input id="${inputId(f)}" class="text" type="${f.type || 'text'}"
+                value="${escapeHtml(f.value ?? '')}" autocomplete="off" spellcheck="false">
+         ${f.hint ? `<p class="hint">${escapeHtml(f.hint)}</p>` : ''}
+       </div>`)).join('')}
     </div>
     <div class="actions">
-      <button class="btn primary" data-act="save">Save</button>
+      <button class="btn primary" data-act="save">${escapeHtml(saveLabel)}</button>
       <div class="grow"></div>
       <button class="btn" data-act="cancel">Cancel</button>
     </div>
   </div>`;
 
+  const read = () => Object.fromEntries(fields.map((f) => {
+    const el = $(`#${inputId(f)}`);
+    return [f.key, f.type === 'checkbox' ? el.checked : el.value];
+  }));
+
   const save = async () => {
-    const name = $('#ren-name').value.trim();
-    const artist = $('#ren-artist').value.trim();
-    if (!name) { toast('An album needs a name', 'err'); return; }
+    const values = read();
     dlg.close();
-    const ctrl = progressStart('Renaming album');
-    try {
-      const newKey = await lib.renameAlbum(album.key, { name, artist });
-      state.album = newKey;
-      await reload();
-      toast('Album renamed');
-    } catch (err) {
-      toast(`Rename failed: ${err.message}`, 'err');
-    } finally { ctrl.done(); }
+    try { await onSave(values); } catch (err) { toast(err.message, 'err'); }
   };
 
   dlg.onclick = (e) => {
     if (e.target.dataset?.act === 'save') save();
     if (e.target.dataset?.act === 'cancel') dlg.close();
   };
-  dlg.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); save(); } };
+  dlg.onkeydown = (e) => {
+    if (e.key === 'Enter' && e.target.tagName === 'INPUT' && e.target.type !== 'checkbox') {
+      e.preventDefault();
+      save();
+    }
+  };
   dlg.showModal();
-  $('#ren-name').select();
+  const first = dlg.querySelector('input.text');
+  first?.select();
+  return dlg;
+}
+
+function openAlbumEditDialog(album) {
+  formDialog({
+    title: 'Edit album',
+    hint: `Applies to all ${album.trackCount} track${album.trackCount === 1 ? '' : 's'} in this album.`,
+    fields: [
+      { key: 'name', label: 'Album name', value: album.name, span: true },
+      { key: 'artist', label: 'Album artist', value: album.artist, span: true },
+      {
+        key: 'applyToTrackArtists',
+        label: 'Also set every track\'s own artist to this',
+        type: 'checkbox',
+        value: false,
+      },
+    ],
+    async onSave({ name, artist, applyToTrackArtists }) {
+      if (!name.trim()) { toast('An album needs a name', 'err'); return; }
+      const ctrl = progressStart('Updating album');
+      try {
+        state.album = await lib.renameAlbum(album.key, { name, artist, applyToTrackArtists });
+        await reload();
+        toast('Album updated');
+      } finally { ctrl.done(); }
+    },
+  });
+}
+
+function openTrackEditDialog(track) {
+  formDialog({
+    title: 'Edit track details',
+    hint: 'Changing the album or album artist moves this track to that album.',
+    fields: [
+      { key: 'title', label: 'Title', value: track.title, span: true },
+      { key: 'artist', label: 'Artist', value: track.artist, span: true },
+      { key: 'album', label: 'Album', value: track.album },
+      { key: 'albumArtist', label: 'Album artist', value: track.albumArtist, hint: 'Leave empty to use the artist' },
+      { key: 'trackNo', label: 'Track no.', value: track.trackNo || '', type: 'number' },
+      { key: 'discNo', label: 'Disc no.', value: track.discNo || '', type: 'number' },
+      { key: 'year', label: 'Year', value: track.year },
+      { key: 'genre', label: 'Genre', value: track.genre },
+    ],
+    async onSave(values) {
+      await lib.updateTrack(track.id, values);
+      await reload();
+      if (player.track?.id === track.id) {
+        const fresh = state.tracks.find((t) => t.id === track.id);
+        if (fresh) updatePlayerUI(fresh, lib.gainFor(fresh, state.settings, albumOf(fresh)));
+      }
+      toast('Track updated');
+    },
+  });
+}
+
+/** Bulk-set the artist on the current selection. */
+function openBulkArtistDialog() {
+  const ids = [...state.picked];
+  if (!ids.length) { toast('Select some tracks first'); return; }
+  const picked = state.tracks.filter((t) => ids.includes(t.id));
+  const artists = [...new Set(picked.map((t) => t.artist))];
+
+  formDialog({
+    title: `Set artist on ${ids.length} track${ids.length === 1 ? '' : 's'}`,
+    hint: artists.length === 1
+      ? `All ${ids.length} currently have “${escapeHtml(artists[0])}”.`
+      : `The selection currently spans ${artists.length} different artists.`,
+    saveLabel: 'Apply',
+    fields: [
+      { key: 'artist', label: 'Artist', value: artists.length === 1 ? artists[0] : '', span: true },
+      { key: 'albumArtist', label: 'Also set album artist to the same', type: 'checkbox', value: false },
+    ],
+    async onSave({ artist, albumArtist }) {
+      if (!artist.trim()) { toast('Enter an artist name', 'err'); return; }
+      const ctrl = progressStart(`Updating ${ids.length} track${ids.length === 1 ? '' : 's'}`);
+      try {
+        const fields = { artist };
+        if (albumArtist) fields.albumArtist = artist;
+        const n = await lib.updateTracks(ids, fields, {
+          signal: ctrl.signal,
+          onProgress: (d, total, label) => ctrl.set(d / total, `${d} / ${total} — ${label}`),
+        });
+        await reload();
+        setSelectMode(false);
+        toast(`Updated ${n} track${n === 1 ? '' : 's'}`);
+      } finally { ctrl.done(); }
+    },
+  });
 }
 
 /* ================================ artwork ================================= */
@@ -1044,6 +1147,7 @@ async function openTrackDialog(id) {
 
     <div class="actions">
       <button class="btn primary" data-act="play">Play</button>
+      <button class="btn" data-act="edit">Edit details</button>
       <button class="btn" data-act="art">Set artwork</button>
       <button class="btn" data-act="analyze">Re-analyze</button>
       <button class="btn" data-act="normalize">Normalize quality</button>
@@ -1060,6 +1164,7 @@ async function openTrackDialog(id) {
     if (!act) return;
     if (act === 'close') { dlg.close(); return; }
     if (act === 'play') { dlg.close(); playTrack(t.id, visibleTracks().map((x) => x.id)); return; }
+    if (act === 'edit') { dlg.close(); openTrackEditDialog(t); return; }
     if (act === 'art') { dlg.close(); pickArtFor({ trackId: t.id }); return; }
     if (act === 'analyze') {
       dlg.close();

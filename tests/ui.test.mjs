@@ -185,8 +185,8 @@ try {
   const renamed = await page.evaluate(async () => {
     document.querySelector('[data-album-act="rename"]').click();
     await new Promise((r) => setTimeout(r, 100));
-    document.querySelector('#ren-name').value = 'Late Night Tapes';
-    document.querySelector('#ren-artist').value = 'The Quiet Type';
+    document.querySelector('#f-name').value = 'Late Night Tapes';
+    document.querySelector('#f-artist').value = 'The Quiet Type';
     document.querySelector('[data-act="save"]').click();
     await new Promise((r) => setTimeout(r, 1200));
     const dbm = await import('./js/db.js');
@@ -475,6 +475,136 @@ try {
   ok('clicking Add album opens it', menu.openAfterClick);
   eq('it offers folder and zip', menu.items, ['folder', 'zip']);
   ok('clicking elsewhere closes it', menu.closedAfterOutside);
+
+  /* ---------- 12. editing track and album artists ---------- */
+  // A page reload drops the injected helpers, so re-inject before each use.
+  const seed = async () => {
+    await page.evaluate(ART);
+    return page.evaluate(async () => {
+    const lib = await import('./js/library.js');
+    const dbm = await import('./js/db.js');
+    await dbm.wipe();
+    const settings = await dbm.settings();
+    await lib.importFiles([1, 2, 3].map((i) =>
+      window.__mp3(`0${i}.mp3`, { title: `Song ${i}`, artist: 'Old Artist', album: 'The Record' })), { settings });
+      const tracks = await dbm.getAll('tracks');
+      return lib.sortAlbumTracks(tracks, { sortMode: 'folder' }).map((t) => t.id);
+    });
+  };
+
+  // (a) one track's artist, through the real dialog
+  let ids = await seed();
+  await page.goto(URL);
+  await bootWait();
+  const oneEdit = await page.evaluate(`(async () => {
+    document.querySelector('[data-menu="${ids[0]}"]').click();
+    await new Promise((r) => setTimeout(r, 150));
+    document.querySelector('[data-act="edit"]').click();
+    await new Promise((r) => setTimeout(r, 150));
+    const before = document.querySelector('#f-artist').value;
+    document.querySelector('#f-artist').value = 'New Artist';
+    document.querySelector('[data-act="save"]').click();
+    await new Promise((r) => setTimeout(r, 900));
+    const dbm = await import('./js/db.js');
+    const t = await dbm.get('tracks', ${JSON.stringify(ids[0])});
+    const others = (await dbm.getAll('tracks')).filter((x) => x.id !== ${JSON.stringify(ids[0])});
+    return { before, artist: t.artist, album: t.album, title: t.title, othersUnchanged: others.every((x) => x.artist === 'Old Artist') };
+  })()`);
+  eq('the edit dialog pre-fills the current artist', oneEdit.before, 'Old Artist');
+  eq('editing one track changes its artist', oneEdit.artist, 'New Artist');
+  eq('and leaves its other tags alone', [oneEdit.album, oneEdit.title], ['The Record', 'Song 1']);
+  ok('other tracks are untouched', oneEdit.othersUnchanged);
+
+  // (b) album artist, with and without pushing it down to track artists
+  ids = await seed();
+  const albumOnly = await page.evaluate(async () => {
+    const lib = await import('./js/library.js');
+    const dbm = await import('./js/db.js');
+    const key = (await dbm.getAll('albums'))[0].key;
+    await lib.renameAlbum(key, { artist: 'Album Artist', applyToTrackArtists: false });
+    const tracks = await dbm.getAll('tracks');
+    const album = (await dbm.getAll('albums'))[0];
+    return {
+      albumArtist: album.artist,
+      trackArtists: [...new Set(tracks.map((t) => t.artist))],
+      albumArtists: [...new Set(tracks.map((t) => t.albumArtist))],
+      albumCount: (await dbm.getAll('albums')).length,
+    };
+  });
+  eq('album artist is set', albumOnly.albumArtist, 'Album Artist');
+  eq('track artists are left alone by default', albumOnly.trackArtists, ['Old Artist']);
+  eq('no duplicate album records', albumOnly.albumCount, 1);
+
+  const pushDown = await page.evaluate(async () => {
+    const lib = await import('./js/library.js');
+    const dbm = await import('./js/db.js');
+    const key = (await dbm.getAll('albums'))[0].key;
+    await lib.renameAlbum(key, { artist: 'Unified Artist', applyToTrackArtists: true });
+    const tracks = await dbm.getAll('tracks');
+    return {
+      trackArtists: [...new Set(tracks.map((t) => t.artist))],
+      albums: (await dbm.getAll('albums')).length,
+      keys: [...new Set(tracks.map((t) => t.albumKey))],
+    };
+  });
+  eq('opting in rewrites every track artist', pushDown.trackArtists, ['Unified Artist']);
+  eq('the album stays a single album', pushDown.albums, 1);
+  eq('all tracks share one album key', pushDown.keys.length, 1);
+
+  // (c) bulk "Set artist" over a selection
+  ids = await seed();
+  await page.goto(URL);
+  await bootWait();
+  const bulk = await page.evaluate(`(async () => {
+    document.querySelector('#btn-select').click();
+    await new Promise((r) => setTimeout(r, 200));
+    const rows = [...document.querySelectorAll('#track-list .track')];
+    rows[0].click();
+    rows[1].click();
+    await new Promise((r) => setTimeout(r, 150));
+    document.querySelector('#btn-sel-artist').click();
+    await new Promise((r) => setTimeout(r, 200));
+    const hint = document.querySelector('.dlg-body .muted')?.textContent.trim();
+    document.querySelector('#f-artist').value = 'Bulk Artist';
+    document.querySelector('[data-act="save"]').click();
+    await new Promise((r) => setTimeout(r, 1200));
+    const dbm = await import('./js/db.js');
+    const tracks = await dbm.getAll('tracks');
+    return {
+      hint,
+      bulk: tracks.filter((t) => t.artist === 'Bulk Artist').length,
+      untouched: tracks.filter((t) => t.artist === 'Old Artist').length,
+      selectClosed: document.querySelector('#selection-bar').classList.contains('hidden'),
+    };
+  })()`);
+  eq('bulk edit applies to exactly the selection', bulk.bulk, 2);
+  eq('unselected tracks keep their artist', bulk.untouched, 1);
+  ok('the dialog reports the shared current artist', /Old Artist/.test(bulk.hint || ''), bulk.hint);
+  ok('selection mode closes afterwards', bulk.selectClosed);
+
+  // (d) editing the album name moves a track to another album
+  ids = await seed();
+  const moved = await page.evaluate(`(async () => {
+    const lib = await import('./js/library.js');
+    const dbm = await import('./js/db.js');
+    await lib.updateTrack(${JSON.stringify(ids[0])}, { album: 'Different Record' });
+    const albums = await dbm.getAll('albums');
+    return {
+      albums: albums.map((a) => ({ name: a.name, count: a.trackCount })).sort((x, y) => x.name.localeCompare(y.name)),
+    };
+  })()`);
+  eq('the track moved into a new album, both counts correct', moved.albums,
+    [{ name: 'Different Record', count: 1 }, { name: 'The Record', count: 2 }]);
+
+  // (e) blanks fall back rather than producing an empty library entry
+  const blanks = await page.evaluate(`(async () => {
+    const lib = await import('./js/library.js');
+    const dbm = await import('./js/db.js');
+    const t = await lib.updateTrack(${JSON.stringify(ids[1])}, { artist: '   ', title: '' });
+    return { artist: t.artist, title: t.title };
+  })()`);
+  eq('a blank artist falls back', blanks.artist, 'Unknown Artist');
+  ok('a blank title falls back to the file name', blanks.title.length > 0, blanks.title);
 
   console.log('\n--- console output from the page ---');
   page.dumpLogs();

@@ -258,18 +258,81 @@ export async function setAlbumOrder(key, ids) {
   return album;
 }
 
+/* -------------------------------- editing --------------------------------- */
+
+/** Tag fields the user is allowed to edit. */
+const EDITABLE = ['title', 'artist', 'albumArtist', 'album', 'trackNo', 'discNo', 'year', 'genre'];
+const NUMERIC = new Set(['trackNo', 'discNo']);
+
+function applyFields(track, fields) {
+  for (const k of EDITABLE) {
+    if (!(k in fields) || fields[k] === undefined) continue;
+    const v = fields[k];
+    track[k] = NUMERIC.has(k) ? (parseInt(v, 10) || 0) : String(v ?? '').trim();
+  }
+  // A track must always have something to show and somewhere to live.
+  if (!track.title) track.title = (track.fileName || 'Unknown').replace(/\.[^.]+$/, '');
+  if (!track.artist) track.artist = 'Unknown Artist';
+  if (!track.album) track.album = 'Unknown Album';
+  return track;
+}
+
 /**
- * Rename an album (and optionally its album artist) across every track in it.
- * Returns the album's new key, which changes because the key is derived from names.
+ * Edit one track's tags. The album key is derived from album/albumArtist/artist,
+ * so changing any of those moves the track between albums — both the old and the
+ * new album are refreshed.
  */
-export async function renameAlbum(key, { name, artist } = {}) {
+export async function updateTrack(id, fields) {
+  const track = await db.get('tracks', id);
+  if (!track) return null;
+  const oldKey = track.albumKey;
+  applyFields(track, fields);
+  track.albumKey = albumKeyOf(track);
+  await db.put('tracks', track);
+  if (oldKey !== track.albumKey) await refreshAlbum(oldKey);
+  await refreshAlbum(track.albumKey);
+  return track;
+}
+
+/** Apply the same fields to many tracks (e.g. fixing the artist on a selection). */
+export async function updateTracks(ids, fields, { onProgress, signal } = {}) {
+  const wanted = new Set(ids);
+  const tracks = (await db.getAll('tracks')).filter((t) => wanted.has(t.id));
+  const touched = new Set();
+  let done = 0;
+  for (const t of tracks) {
+    if (signal?.aborted) break;
+    touched.add(t.albumKey);
+    applyFields(t, fields);
+    t.albumKey = albumKeyOf(t);
+    touched.add(t.albumKey);
+    await db.put('tracks', t);
+    onProgress?.(++done, tracks.length, t.title);
+  }
+  for (const key of touched) await refreshAlbum(key);
+  return done;
+}
+
+/**
+ * Rename an album and/or set its artist across every track in it.
+ * @param {object} o
+ * @param {string} [o.name]    new album title
+ * @param {string} [o.artist]  new album artist
+ * @param {boolean} [o.applyToTrackArtists] also overwrite each track's own artist —
+ *        wanted for a single-artist album, not for a compilation
+ * @returns {Promise<string>} the album's new key (it changes with the names)
+ */
+export async function renameAlbum(key, { name, artist, applyToTrackArtists = false } = {}) {
   const tracks = await db.byIndex('tracks', 'albumKey', key);
   if (!tracks.length) return key;
   const previous = await db.get('albums', key);
 
   for (const t of tracks) {
     if (name != null && name.trim()) t.album = name.trim();
-    if (artist != null) t.albumArtist = artist.trim();
+    if (artist != null) {
+      t.albumArtist = artist.trim();
+      if (applyToTrackArtists && t.albumArtist) t.artist = t.albumArtist;
+    }
     t.albumKey = albumKeyOf(t);
     await db.put('tracks', t);
   }
