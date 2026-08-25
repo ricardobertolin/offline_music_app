@@ -2,7 +2,7 @@
    App shell is cache-first (works fully offline); the library itself lives in IndexedDB,
    so audio never goes through here. Also implements the Web Share Target hand-off. */
 
-const VERSION = 'v2.1.0';
+const VERSION = 'v2.2.0';
 const SHELL = `shell-${VERSION}`;
 const SHARE = 'share-inbox';
 // Webfonts are cross-origin and versioned by URL, so they get their own cache

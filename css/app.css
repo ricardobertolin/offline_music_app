@@ -648,6 +648,92 @@ button.tile:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
 .wave.flat i{height:34% !important}
 .transport input[type=range]{width:76px;accent-color:var(--accent);flex:0 0 auto}
 
+/* ======================= now playing (phone) ======================= */
+
+/* The design's second phone screen. It covers the whole viewport — including
+   the transport that opened it — and never appears on desktop, where the
+   record hero and the transport already show everything on it. */
+.now{
+  position:fixed;inset:0;z-index:70;
+  display:flex;flex-direction:column;
+  padding:calc(14px + env(safe-area-inset-top)) 24px calc(26px + env(safe-area-inset-bottom));
+  background:var(--ink-0);overflow-y:auto;overscroll-behavior:contain;
+}
+.now[hidden]{display:none}
+@media (min-width:861px){ .now{display:none !important} }
+
+.now-wash{position:absolute;inset:0;background:var(--wash);opacity:.7}
+.now-shade{
+  position:absolute;inset:0;
+  background:linear-gradient(to bottom, rgba(10,10,11,.2) 0%, rgba(10,10,11,.78) 55%, rgba(10,10,11,.88) 100%);
+}
+.now-grain{
+  position:absolute;inset:0;mix-blend-mode:overlay;
+  background-image:radial-gradient(rgba(255,255,255,.5) .5px, transparent .6px);
+  background-size:3px 3px;opacity:var(--haze);
+}
+.now-head,.now-art,.now-title,.now-seek,.now-controls,.now-foot{position:relative;z-index:1;flex:0 0 auto}
+
+.now-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.now{outline:none}
+.now-icon{
+  appearance:none;border:0;background:transparent;color:rgba(255,255,255,.8);
+  font-family:var(--mono);font-size:16px;line-height:1;cursor:pointer;
+  width:32px;height:32px;flex:0 0 32px;padding:0;
+}
+.now-icon:hover{color:var(--fg-hi)}
+.now-icon:focus-visible{outline:1px solid var(--accent-line);outline-offset:2px}
+/* Drawn rather than typeset: the mono stack has no chevron, and falls back to
+   a letter "v". */
+.now-icon.chev::before{
+  content:"";display:block;width:9px;height:9px;margin:-3px auto 0;
+  border-right:1.6px solid currentColor;border-bottom:1.6px solid currentColor;
+  transform:rotate(45deg);
+}
+.now-from{text-align:center;min-width:0}
+.now-record{
+  margin-top:4px;font-weight:500;font-size:15px;letter-spacing:.14em;text-transform:uppercase;
+  color:rgba(255,255,255,.9);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+
+.now-art{margin-top:24px}
+/* The press turns behind the cover rather than beside it, as on the design's
+   phone screen — the transport that carried the small one is covered up. */
+.now-art .disc{opacity:.42;mix-blend-mode:screen}
+.now-art .tile-cap{left:18px;right:18px;bottom:20px}
+.now-art .tile-cap b{font-size:26px;line-height:.98;letter-spacing:.03em}
+
+.now-title{margin-top:24px}
+.now-track{
+  font-weight:600;font-size:28px;letter-spacing:.03em;text-transform:uppercase;
+  line-height:1.02;color:var(--fg-hi);text-wrap:balance;
+}
+.now-artist{margin-top:6px;font-size:16px;letter-spacing:.12em;text-transform:uppercase;color:var(--fg-2)}
+
+.now-seek{margin-top:22px}
+.now-seek .wave{max-width:none;height:44px}
+.now-times{
+  display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-top:9px;
+  font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--fg-3);
+  font-variant-numeric:tabular-nums;
+}
+#now-cur{color:rgba(255,255,255,.82)}
+#now-format{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.now-controls{margin-top:24px;display:flex;align-items:center;justify-content:space-between;gap:6px}
+.now-controls .icon{font-size:15px;padding:8px}
+.now-play{
+  appearance:none;border:0;background:var(--accent);color:var(--accent-ink);
+  width:66px;height:66px;flex:0 0 66px;cursor:pointer;
+  font-family:var(--mono);font-size:17px;
+}
+.now-play:hover{background:var(--accent-hi)}
+
+.now-foot{
+  margin-top:auto;padding-top:24px;display:flex;align-items:center;justify-content:space-between;gap:12px;
+  font-family:var(--mono);font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:var(--fg-3);
+}
+
 /* ============================== overlays ============================== */
 
 .toasts{
@@ -740,6 +826,8 @@ button.tile:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
   .track-list.compact .tl-head,.track-list.compact .track{grid-template-columns:40px minmax(0,2fr) 96px 28px}
   .track-list.compact .t3,.track-list.compact .num.kbps{display:none}
 
+  /* The mini player is the way into the Now-playing screen. */
+  .t-now{cursor:pointer}
   .t-seek .gain-badge,.transport input[type=range]{display:none}
   .chrome{flex-wrap:wrap;padding:8px 14px;gap:10px}
   .chrome-ctx,.chip-offline{display:none}

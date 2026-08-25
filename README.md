@@ -62,6 +62,12 @@ corners, one accent colour — the **Offpress** design.
   scrolling strip under the header, and the header's search drops to its own line.
 - The **transport** carries the mini cover (with the press turning while it plays), the
   transport buttons, the applied normalization gain, and the loudness-envelope scrubber.
+- On a phone, tapping the mini player opens the **Now-playing screen**: the record's
+  cover full width with the press turning behind it, the track, the wide scrubber over
+  the same measured envelope, a 66 px transport, and the file's real format, queue
+  position and applied gain along the bottom. `⌄` or Escape goes back; playback is
+  untouched either way. It only exists under 860 px — above that the transport and the
+  record hero already carry all of it.
 - A record's hero carries a **live output meter** while something is playing. It reads
   real FFT magnitudes off the playback graph *after* normalization gain, so it moves with
   what you actually hear rather than to a timer. Desktop only, and off under

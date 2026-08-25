@@ -371,6 +371,61 @@
   </div>
 </footer>
 
+<!-- NOW PLAYING — the design's second phone screen, one tap from the mini
+     player. Phone widths only: on desktop the transport and the record hero
+     already carry everything on it. -->
+<section class="now" id="now" hidden tabindex="-1" aria-label="Now playing">
+  <div class="now-wash"></div>
+  <div class="now-shade"></div>
+  <div class="now-grain"></div>
+
+  <header class="now-head">
+    <button class="now-icon chev" id="now-close" aria-label="Back to the library" title="Back to the library"></button>
+    <div class="now-from">
+      <div class="eyebrow">Playing from record</div>
+      <div class="now-record" id="now-record"></div>
+    </div>
+    <button class="now-icon" id="now-more" aria-label="Track details" title="Track details">⋮</button>
+  </header>
+
+  <div class="tile now-art" id="now-art-box">
+    <img id="now-art" class="is-empty" alt="">
+    <i class="disc"></i>
+    <div class="tile-cap">
+      <b id="now-cap-title"></b>
+      <span id="now-cap-sub"></span>
+    </div>
+  </div>
+
+  <div class="now-title">
+    <div class="now-track" id="now-track"></div>
+    <div class="now-artist" id="now-artist"></div>
+  </div>
+
+  <div class="now-seek">
+    <div class="wave flat" id="now-wave" role="slider" tabindex="0"
+         aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>
+    <div class="now-times">
+      <span id="now-cur">0:00</span>
+      <span id="now-format"></span>
+      <span id="now-dur">0:00</span>
+    </div>
+  </div>
+
+  <div class="now-controls">
+    <button id="now-shuffle" class="icon" title="Shuffle">⤨</button>
+    <button id="now-prev" class="icon" title="Previous">◂◂</button>
+    <button id="now-play" class="now-play" title="Play / pause">▮▮</button>
+    <button id="now-next" class="icon" title="Next">▸▸</button>
+    <button id="now-repeat" class="icon" title="Repeat">↻</button>
+  </div>
+
+  <div class="now-foot">
+    <span id="now-queue"></span>
+    <span class="gain-badge" id="now-gain">0.0 dB</span>
+  </div>
+</section>
+
 </div><!-- /.shell -->
 
 <div id="toasts" class="toasts"></div>

@@ -212,6 +212,9 @@ function bindUI() {
   window.addEventListener('resize', debounce(syncMeter, 200));
 
   document.addEventListener('keydown', (e) => {
+    // Escape closes the phone screen first — its close button holds focus, and
+    // the guard below would otherwise swallow the key.
+    if (e.key === 'Escape' && !$('#now').hidden && !$('dialog[open]')) { openNow(false); return; }
     // Don't hijack keys meant for a form control, a focused button or a dialog.
     if (e.target.matches('input,select,textarea,button') || $('dialog[open]')) return;
     if (e.code === 'Space') { e.preventDefault(); player.toggle(); }
@@ -1217,9 +1220,18 @@ function wirePlayer() {
   player.setVolume(state.settings.volume);
   player.setLimiter(state.settings.limiter);
   $('#p-vol').value = state.settings.volume;
-  $('#p-shuffle').classList.toggle('is-on', state.settings.shuffle);
-  $('#p-repeat').classList.toggle('is-on', state.settings.repeat !== 'off');
+  $$('#p-shuffle,#now-shuffle').forEach((b) => b.classList.toggle('is-on', state.settings.shuffle));
+  $$('#p-repeat,#now-repeat').forEach((b) => {
+    b.classList.toggle('is-on', state.settings.repeat !== 'off');
+    b.textContent = state.settings.repeat === 'one' ? '↻1' : '↻';
+  });
 
+  // The transport and the phone Now-playing screen drive the same player, so
+  // every control exists twice and both copies show the same state.
+  for (const [a, b] of [['#p-play', '#now-play'], ['#p-next', '#now-next'], ['#p-prev', '#now-prev'],
+    ['#p-shuffle', '#now-shuffle'], ['#p-repeat', '#now-repeat']]) {
+    $(b).addEventListener('click', () => $(a).click());
+  }
   $('#p-play').addEventListener('click', () => player.toggle());
   $('#p-next').addEventListener('click', () => playNext(1));
   $('#p-prev').addEventListener('click', () => (player.position > 3 ? player.seek(0) : playNext(-1)));
@@ -1231,25 +1243,36 @@ function wirePlayer() {
   $('#p-shuffle').addEventListener('click', async () => {
     const on = !state.settings.shuffle;
     await db.setSetting('shuffle', on);
-    $('#p-shuffle').classList.toggle('is-on', on);
+    $$('#p-shuffle,#now-shuffle').forEach((b) => b.classList.toggle('is-on', on));
     if (on) shuffleQueue();
   });
   $('#p-repeat').addEventListener('click', async () => {
     const next = { off: 'all', all: 'one', one: 'off' }[state.settings.repeat];
     await db.setSetting('repeat', next);
-    $('#p-repeat').classList.toggle('is-on', next !== 'off');
-    $('#p-repeat').textContent = next === 'one' ? '↻1' : '↻';
+    $$('#p-repeat,#now-repeat').forEach((b) => {
+      b.classList.toggle('is-on', next !== 'off');
+      b.textContent = next === 'one' ? '↻1' : '↻';
+    });
   });
 
+  // Tapping the mini player opens the second screen; ⌄ and Escape close it.
+  $('.t-now').addEventListener('click', () => openNow(true));
+  $('#now-close').addEventListener('click', () => openNow(false));
+  $('#now-more').addEventListener('click', () => player.track && openTrackDialog(player.track.id));
+  // Growing past the fold leaves the phone screen stranded over a desktop layout.
+  window.addEventListener('resize', debounce(() => { if (!isPhone()) openNow(false); }, 200));
+
   player.on('track', () => { bar.hidden = false; });
-  player.on('play', () => { $('#p-play').textContent = 'Pause'; setSpin(true); syncMeter(); });
-  player.on('pause', () => { $('#p-play').textContent = 'Play'; setSpin(false); syncMeter(); });
+  player.on('play', () => { setPlayLabel(true); setSpin(true); syncMeter(); });
+  player.on('pause', () => { setPlayLabel(false); setSpin(false); syncMeter(); });
   player.on('ended', () => playNext(1, true));
   player.on('error', () => toast('Playback error — the file may be corrupt', 'err'));
   player.on('timeupdate', () => {
     const d = player.duration, p = player.position;
     $('#p-cur').textContent = fmtTime(p);
     $('#p-dur').textContent = fmtTime(d);
+    $('#now-cur').textContent = fmtTime(p);
+    $('#now-dur').textContent = fmtTime(d);
     paintWave(d ? p / d : 0);
     if ('mediaSession' in navigator && navigator.mediaSession.setPositionState && d) {
       try { navigator.mediaSession.setPositionState({ duration: d, position: Math.min(p, d) }); } catch { /* ignore */ }
@@ -1271,38 +1294,16 @@ function wirePlayer() {
  * The scrubber draws the track's measured momentary-loudness envelope (stored
  * by the analysis pass). A track that has not been analyzed gets a flat strip
  * rather than an invented shape — it still scrubs, it just claims nothing.
+ *
+ * There are two: the transport's, and the phone Now-playing screen's wider one.
+ * They share the envelope but keep their own bars and their own fill cursor.
  */
-const WAVE_BARS = 96;
-let waveBars = [];
-let waveFilled = -1;
+const waves = [];
 
-function renderWave(track) {
-  const box = $('#p-wave');
-  const env = track?.loudness?.envelope;
-  const n = env?.length || 0;
-  box.classList.toggle('flat', !n);
-  box.replaceChildren(...Array.from({ length: WAVE_BARS }, (_, i) => {
-    const bar = document.createElement('i');
-    const v = n ? env[Math.min(n - 1, Math.floor((i / WAVE_BARS) * n))] / 255 : 0.34;
-    bar.style.height = `${Math.max(6, v * 100)}%`;
-    return bar;
-  }));
-  waveBars = [...box.children];
-  waveFilled = -1;
-  paintWave(0);
-}
-
-function paintWave(frac) {
-  const n = Math.round(Math.max(0, Math.min(1, frac)) * WAVE_BARS);
-  if (n === waveFilled) return;
-  const [lo, hi] = waveFilled < 0 ? [0, WAVE_BARS] : [Math.min(n, waveFilled), Math.max(n, waveFilled)];
-  for (let i = lo; i < hi; i++) waveBars[i]?.classList.toggle('on', i < n);
-  waveFilled = n;
-  $('#p-wave').setAttribute('aria-valuenow', String(Math.round(frac * 100)));
-}
-
-function bindWave() {
-  const box = $('#p-wave');
+function addWave(sel, count) {
+  const box = $(sel);
+  if (!box) return;
+  waves.push({ box, count, bars: [], filled: -1 });
   const seekTo = (clientX) => {
     const d = player.duration;
     if (!d) return;
@@ -1315,6 +1316,40 @@ function bindWave() {
     if (e.key === 'ArrowRight') { e.preventDefault(); player.seek(player.position + step); }
     if (e.key === 'ArrowLeft') { e.preventDefault(); player.seek(Math.max(0, player.position - step)); }
   });
+}
+
+function renderWave(track) {
+  const env = track?.loudness?.envelope;
+  const n = env?.length || 0;
+  for (const w of waves) {
+    w.box.classList.toggle('flat', !n);
+    w.box.replaceChildren(...Array.from({ length: w.count }, (_, i) => {
+      const bar = document.createElement('i');
+      const v = n ? env[Math.min(n - 1, Math.floor((i / w.count) * n))] / 255 : 0.34;
+      bar.style.height = `${Math.max(6, v * 100)}%`;
+      return bar;
+    }));
+    w.bars = [...w.box.children];
+    w.filled = -1;
+  }
+  paintWave(0);
+}
+
+function paintWave(frac) {
+  const f = Math.max(0, Math.min(1, frac));
+  for (const w of waves) {
+    const n = Math.round(f * w.count);
+    if (n === w.filled) continue;
+    const [lo, hi] = w.filled < 0 ? [0, w.count] : [Math.min(n, w.filled), Math.max(n, w.filled)];
+    for (let i = lo; i < hi; i++) w.bars[i]?.classList.toggle('on', i < n);
+    w.filled = n;
+    w.box.setAttribute('aria-valuenow', String(Math.round(f * 100)));
+  }
+}
+
+function bindWave() {
+  addWave('#p-wave', 96);
+  addWave('#now-wave', 60);   // the design's phone screen draws 60
   renderWave(null);
 }
 
@@ -1378,12 +1413,68 @@ function stopMeter() {
   for (const bar of meterBars) { bar.style.height = `${METER_REST}%`; bar.classList.remove('on'); }
 }
 
-const setSpin = (on) => $('#p-art-box').classList.toggle('spin', on && !!state.settings.spinDisc);
+const setSpin = (on) => {
+  const spin = on && !!state.settings.spinDisc;
+  $('#p-art-box').classList.toggle('spin', spin);
+  $('#now-art-box').classList.toggle('spin', spin);
+};
+
+/** The transport spells it out; the phone screen's 66px square uses glyphs. */
+function setPlayLabel(playing) {
+  $('#p-play').textContent = playing ? 'Pause' : 'Play';
+  $('#now-play').textContent = playing ? '▮▮' : '▶';
+}
+
+/* --------------------------- now playing (phone) -------------------------- */
+
+/** The design's second screen only exists at phone widths — on desktop the
+ *  transport and the record hero already say everything it would. */
+const isPhone = () => window.matchMedia('(max-width: 860px)').matches;
+
+function openNow(show) {
+  const on = !!show && !!player.track && isPhone();
+  const el = $('#now');
+  el.hidden = !on;
+  // Focus the screen itself, not its close button: a control would take a
+  // visible ring the moment it is focused from script.
+  if (on) el.focus({ preventScroll: true });
+}
+
+/** Everything on the screen that depends on which track is loaded. */
+async function renderNow(track, gain) {
+  const el = $('#now');
+  const tint = tintOf(track.albumKey);
+  el.style.setProperty('--wash', tint.wash);
+  $('#now-art-box').style.setProperty('--cover', tint.cover);
+
+  $('#now-record').textContent = track.album;
+  $('#now-track').textContent = track.title;
+  $('#now-artist').textContent = track.artist;
+  $('#now-cap-title').textContent = track.album;
+  const total = state.tracks.filter((t) => t.albumKey === track.albumKey).length;
+  $('#now-cap-sub').textContent = track.trackNo ? `Track ${track.trackNo} of ${total}` : `${total} tracks`;
+  // The design prints a fixed "24-BIT 44,1kHZ" here; this is the file's own.
+  // Some codec names already carry the depth ("PCM 16-bit") — don't say it twice.
+  const codec = track.codec || track.container || '';
+  $('#now-format').textContent = [
+    track.bits && !/\d+[- ]?bit/i.test(codec) ? `${track.bits}-bit` : '',
+    track.sampleRate ? `${(track.sampleRate / 1000).toFixed(1)} kHz` : '',
+    codec,
+  ].filter(Boolean).join(' · ');
+  $('#now-gain').textContent = `${fmtDb(gain.gainDb)} dB`;
+  $('#now-queue').textContent = state.queue.length > 1 ? `${state.qi + 1} / ${state.queue.length}` : '';
+
+  const img = $('#now-art');
+  const url = await artUrl(track.artId, 'full');
+  if (url) { img.src = url; img.classList.remove('is-empty'); }
+  else { img.removeAttribute('src'); img.classList.add('is-empty'); }
+}
 
 /** Stop and pack the transport away — nothing is playing, so nothing should show. */
 function stopPlayback() {
   player.stop();
   $('#player').hidden = true;
+  openNow(false);
   setSpin(false);
   stopMeter();
   renderWave(null);
@@ -1406,6 +1497,7 @@ async function updatePlayerUI(track, gain) {
   else { img.removeAttribute('src'); img.classList.add('is-empty'); }
   renderWave(track);
   setSpin(player.playing);
+  await renderNow(track, gain);
 
   if ('mediaSession' in navigator) {
     navigator.mediaSession.metadata = new MediaMetadata({

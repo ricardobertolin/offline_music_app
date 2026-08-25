@@ -487,6 +487,73 @@ try {
   eq('it offers folder and zip', menu.items, ['folder', 'zip']);
   ok('clicking elsewhere closes it', menu.closedAfterOutside);
 
+  /* ---------- 11b. the empty state's own Add album menu ----------
+     It used to borrow the header's, which the document-level closer then shut
+     again in the same click — so first-run "Add album" did nothing at all. */
+  const emptyMenu = await page.evaluate(async () => {
+    const btn = document.querySelector('#btn-empty-album');
+    const m = document.querySelector('#empty-album-menu');
+    const r = btn.getBoundingClientRect();
+    const at = { bubbles: true, cancelable: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2 };
+    btn.dispatchEvent(new MouseEvent('click', at));   // bubbles, like a real tap
+    await new Promise((res) => setTimeout(res, 120));
+    const open = !m.classList.contains('hidden');
+    const items = [...m.querySelectorAll('.menu-item')].map((i) => i.dataset.source);
+    document.body.click();
+    await new Promise((res) => setTimeout(res, 120));
+    return { open, items, closedAfterOutside: m.classList.contains('hidden') };
+  });
+  ok('the empty state has its own add-album menu that stays open', emptyMenu.open);
+  eq('it offers the same two sources', emptyMenu.items, ['folder', 'zip']);
+  ok('and closes on an outside click', emptyMenu.closedAfterOutside);
+
+  /* ---------- 11c. the phone Now-playing screen ---------- */
+  const now = await page.evaluate(async () => {
+    const el = document.querySelector('#now');
+    const tap = async (sel, ms = 200) => {
+      document.querySelector(sel).click();
+      await new Promise((r) => setTimeout(r, ms));
+    };
+    const wide = { hiddenOnDesktop: el.hidden };
+    await tap('.t-now');
+    wide.staysHiddenOnDesktop = el.hidden;   // desktop must never reach it
+
+    // Fold to a phone and play something.
+    document.querySelector('.tab[data-view="tracks"]').click();
+    await new Promise((r) => setTimeout(r, 150));
+    const row = document.querySelector('#track-list .track');
+    if (!row) return { ...wide, noTracks: true };
+    await tap('#track-list .track', 1200);
+    return { ...wide, playing: !document.querySelector('#player').hidden };
+  });
+  ok('the now screen is hidden on desktop', now.hiddenOnDesktop);
+  ok('and tapping the mini player there does not open it', now.staysHiddenOnDesktop);
+
+  await page.send('Emulation.setDeviceMetricsOverride', { width: 400, height: 860, deviceScaleFactor: 1, mobile: true });
+  const phone = await page.evaluate(async () => {
+    const el = document.querySelector('#now');
+    const t = (sel) => document.querySelector(sel).textContent.trim();
+    document.querySelector('.t-now').click();
+    await new Promise((r) => setTimeout(r, 250));
+    const opened = !el.hidden;
+    const filled = !!t('#now-track') && !!t('#now-record');
+    const bars = document.querySelectorAll('#now-wave i').length;
+    // Pausing here must move the transport too — one player, two control sets.
+    document.querySelector('#now-play').click();
+    await new Promise((r) => setTimeout(r, 350));
+    const bothPaused = t('#now-play') === '▶' && t('#p-play') === 'Play';
+    document.querySelector('#now-close').click();
+    await new Promise((r) => setTimeout(r, 200));
+    return { opened, filled, bars, bothPaused, closed: el.hidden, stillLoaded: !document.querySelector('#player').hidden };
+  });
+  await page.send('Emulation.clearDeviceMetricsOverride');
+  ok('tapping the mini player on a phone opens the now screen', phone.opened);
+  ok('it is filled in from the loaded track', phone.filled);
+  eq('its scrubber draws the design’s 60 bars', phone.bars, 60);
+  ok('pausing there pauses the transport too', phone.bothPaused);
+  ok('the chevron closes it', phone.closed);
+  ok('without stopping playback', phone.stillLoaded);
+
   /* ---------- 12. editing track and album artists ---------- */
   // A page reload drops the injected helpers, so re-inject before each use.
   const seed = async () => {
