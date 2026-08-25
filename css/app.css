@@ -49,11 +49,18 @@
 
 *{box-sizing:border-box}
 html,body{margin:0;height:100%}
+/* This is a fixed frame, not a document. Only .stage, the folded rail and the
+   Now-playing screen scroll; the page itself never does. Without the lock a
+   single child a few pixels too wide lets the whole interface be dragged
+   around, which on a phone feels like the app has been zoomed into. body is
+   also position:fixed because iOS honours that where it ignores overflow. */
+html{overflow:hidden}
 body{
+  position:fixed;inset:0;overflow:hidden;
   background:var(--ink-0);color:var(--fg);
   font:400 15px/1.35 var(--sans);
   letter-spacing:.01em;
-  overscroll-behavior-y:none;
+  overscroll-behavior:none;
   -webkit-font-smoothing:antialiased;
 }
 button,input,select,textarea{font:inherit;color:inherit;letter-spacing:inherit}
@@ -78,7 +85,9 @@ h1,h2,h3{margin:0}
 
 /* ============================== shell ============================== */
 
-.shell{position:relative;height:100dvh;display:flex;flex-direction:column;background:var(--ink-1)}
+/* overflow-x:clip, not hidden — hidden would make the shell a scroll container
+   and re-create the sideways drag one level down. */
+.shell{position:relative;height:100dvh;overflow-x:clip;display:flex;flex-direction:column;background:var(--ink-1)}
 .body{flex:1;display:flex;min-height:0}
 
 .chrome{
@@ -533,6 +542,20 @@ button.tile:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
 .switch input{accent-color:var(--accent);width:15px;height:15px;flex:0 0 15px}
 .switch:hover{color:var(--fg)}
 .row{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
+
+/* Settings → Version: label on the left in the microtype voice, value on the
+   right on the hairline, so a mismatch between the two lines is obvious. */
+.verlist{margin:0;display:grid;grid-template-columns:auto 1fr;gap:0 18px}
+.verlist dt{
+  font-family:var(--mono);font-size:8.5px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--fg-4);padding:8px 0;border-top:1px solid var(--line);
+}
+.verlist dd{
+  margin:0;padding:8px 0;border-top:1px solid var(--line);text-align:right;
+  font-family:var(--mono);font-size:11px;letter-spacing:.08em;color:var(--fg-hi);
+}
+.verlist dt:first-of-type,.verlist dd:first-of-type{border-top:0}
+.verlist dd.stale{color:var(--accent)}
 .view > .panel:first-child{margin-top:0}
 .view[data-view=settings] > .panel:first-of-type{margin-top:0}
 
@@ -606,6 +629,15 @@ button.tile:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
 .t-art img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
 .t-art img.is-empty{display:none}
 .t-meta{min-width:0}
+/* Phone only. The mini player is the door to the Now-playing screen, and a
+   door with no handle is a wall — drawn rather than typeset, because the mono
+   stack has no chevron and falls back to a letter. */
+.t-open{display:none;position:relative;width:22px;height:22px;flex:0 0 22px;margin-left:auto;color:var(--fg-3)}
+.t-open::before{
+  content:"";position:absolute;left:6px;top:9px;width:9px;height:9px;
+  border-left:1.6px solid currentColor;border-top:1.6px solid currentColor;
+  transform:rotate(45deg);
+}
 .t-title{
   font-weight:500;font-size:15px;letter-spacing:.1em;text-transform:uppercase;color:rgba(255,255,255,.92);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
@@ -826,9 +858,20 @@ button.tile:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
   .track-list.compact .tl-head,.track-list.compact .track{grid-template-columns:40px minmax(0,2fr) 96px 28px}
   .track-list.compact .t3,.track-list.compact .num.kbps{display:none}
 
-  /* The mini player is the way into the Now-playing screen. */
-  .t-now{cursor:pointer}
-  .t-seek .gain-badge,.transport input[type=range]{display:none}
+  /* The whole bar opens the Now-playing screen, and the chevron says so.
+     .t-now on its own came out 120px wide next to the controls — a target you
+     have to already know is there. */
+  .transport{padding:0 14px;gap:10px;cursor:pointer}
+  .t-open{display:block}
+  /* No room for a scrubber down here, and the Now-playing screen carries a
+     full-width one. Left in, .t-seek collapsed to a 0px sliver that still
+     pushed the controls 12px past the right edge — which is what let the whole
+     page be dragged sideways. */
+  .t-seek{display:none}
+  .t-controls{gap:8px}
+  /* Shuffle and repeat live on the Now-playing screen at this width. */
+  #p-shuffle,#p-repeat{display:none}
+  .play{min-width:72px;padding:0 12px;letter-spacing:.16em}
   .chrome{flex-wrap:wrap;padding:8px 14px;gap:10px}
   .chrome-ctx,.chip-offline{display:none}
   .chrome .search{order:3;flex-basis:100%;max-width:none;margin-left:0}

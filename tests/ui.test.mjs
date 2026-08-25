@@ -529,7 +529,7 @@ try {
   ok('the now screen is hidden on desktop', now.hiddenOnDesktop);
   ok('and tapping the mini player there does not open it', now.staysHiddenOnDesktop);
 
-  await page.send('Emulation.setDeviceMetricsOverride', { width: 400, height: 860, deviceScaleFactor: 1, mobile: true });
+  await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
   const phone = await page.evaluate(async () => {
     const el = document.querySelector('#now');
     const t = (sel) => document.querySelector(sel).textContent.trim();
@@ -546,13 +546,84 @@ try {
     await new Promise((r) => setTimeout(r, 200));
     return { opened, filled, bars, bothPaused, closed: el.hidden, stillLoaded: !document.querySelector('#player').hidden };
   });
-  await page.send('Emulation.clearDeviceMetricsOverride');
   ok('tapping the mini player on a phone opens the now screen', phone.opened);
   ok('it is filled in from the loaded track', phone.filled);
   eq('its scrubber draws the design’s 60 bars', phone.bars, 60);
   ok('pausing there pauses the transport too', phone.bothPaused);
   ok('the chevron closes it', phone.closed);
   ok('without stopping playback', phone.stillLoaded);
+
+  /* ---------- 11d. the phone transport: target size and no page pan ----------
+     .t-now on its own came out 120px wide beside the controls, and the seek
+     block it was competing with pushed the bar 12px past the right edge — so
+     the whole interface could be dragged sideways like a zoomed image. */
+  const bar = await page.evaluate(async () => {
+    const el = document.querySelector('#now');
+    const doc = document.documentElement;
+    const p = document.querySelector('#player');
+    const b = p.getBoundingClientRect();
+    // Where a finger lands: the empty ink at the far left of the bar, well
+    // clear of the artwork.
+    const hitAt = (x, y) => {
+      el.hidden = true;
+      document.elementFromPoint(x, y)
+        .dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: x, clientY: y }));
+      return !el.hidden;
+    };
+    const out = {
+      overflowsX: doc.scrollWidth > doc.clientWidth,
+      overflowsY: doc.scrollHeight > doc.clientHeight,
+      bodyFixed: getComputedStyle(document.body).position === 'fixed',
+      barWithinViewport: Math.round(b.right) <= doc.clientWidth,
+      chevronShown: getComputedStyle(document.querySelector('.t-open')).display !== 'none',
+      openWidth: Math.round(document.querySelector('.t-now').getBoundingClientRect().width),
+      farLeftOpens: hitAt(b.x + 5, b.y + b.height / 2),
+    };
+    // ...but a control still does its own job. Whether the sound actually
+    // resumes depends on the synthetic fixture, so watch the button get the
+    // click rather than the label that follows from decoding.
+    const play = document.querySelector('#p-play');
+    const pb = play.getBoundingClientRect();
+    play.addEventListener('click', () => { out.playGotClick = true; }, { once: true });
+    out.playGotClick = false;
+    out.playOpens = hitAt(pb.x + pb.width / 2, pb.y + pb.height / 2);
+    el.hidden = true;
+    return out;
+  });
+  await page.send('Emulation.clearDeviceMetricsOverride');
+  ok('the phone layout does not scroll sideways', !bar.overflowsX);
+  ok('nor up and down at the document level', !bar.overflowsY);
+  ok('the body is pinned, so nothing pans', bar.bodyFixed);
+  ok('the transport fits inside the viewport', bar.barWithinViewport);
+  ok('the mini player shows its open-up chevron', bar.chevronShown);
+  ok('and is wide enough to hit', bar.openWidth >= 180, `${bar.openWidth}px`);
+  ok('tapping empty bar ink opens the now screen', bar.farLeftOpens);
+  ok('tapping Play does not', !bar.playOpens);
+  ok('the button gets the tap instead', bar.playGotClick);
+
+  /* ---------- 11e. Settings → Version ---------- */
+  const ver = await page.evaluate(async () => {
+    document.querySelector('.tab[data-view="settings"]').click();
+    await new Promise((r) => setTimeout(r, 200));
+    const t = (sel) => document.querySelector(sel).textContent.trim();
+    const heads = [...document.querySelectorAll('.view[data-view="settings"] .panel h3')].map((h) => h.textContent.trim());
+    const util = await import('./js/util.js');
+    return {
+      last: heads[heads.length - 1],
+      app: t('#ver-app'),
+      constant: util.APP_VERSION,
+      sw: t('#ver-sw'),
+      mode: t('#ver-mode'),
+      state: t('#ver-state').length > 0,
+      hasButton: !!document.querySelector('#btn-update'),
+    };
+  });
+  eq('Version is the last panel in Settings', ver.last, 'Version');
+  eq('it prints the app version', ver.app, ver.constant);
+  ok('and the cache the worker is actually serving', /^v\d|Not /.test(ver.sw), ver.sw);
+  ok('it says whether the app is installed', /^(Yes|No)/.test(ver.mode), ver.mode);
+  ok('it explains the state in words', ver.state);
+  ok('and offers a way to update', ver.hasButton);
 
   /* ---------- 12. editing track and album artists ---------- */
   // A page reload drops the injected helpers, so re-inject before each use.

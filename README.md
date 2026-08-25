@@ -62,12 +62,17 @@ corners, one accent colour — the **Offpress** design.
   scrolling strip under the header, and the header's search drops to its own line.
 - The **transport** carries the mini cover (with the press turning while it plays), the
   transport buttons, the applied normalization gain, and the loudness-envelope scrubber.
-- On a phone, tapping the mini player opens the **Now-playing screen**: the record's
-  cover full width with the press turning behind it, the track, the wide scrubber over
-  the same measured envelope, a 66 px transport, and the file's real format, queue
-  position and applied gain along the bottom. `⌄` or Escape goes back; playback is
-  untouched either way. It only exists under 860 px — above that the transport and the
-  record hero already carry all of it.
+- On a phone, tapping **anywhere on the transport bar** — the whole strip, not just the
+  cover — opens the **Now-playing screen**, and a chevron on the mini player says so.
+  It carries the record's cover full width with the press turning behind it, the track,
+  the wide scrubber over the same measured envelope, a 66 px transport, and the file's
+  real format, queue position and applied gain along the bottom. `⌄` or Escape goes
+  back; playback is untouched either way. It only exists under 860 px — above that the
+  transport and the record hero already carry all of it. At that width the bar itself
+  drops to cover, title, prev/play/next; the scrubber, shuffle and repeat live on the
+  Now-playing screen, which is where there is room for them.
+- The page itself never scrolls. Only the stage, the folded rail and the Now-playing
+  screen do, so nothing can be dragged around the way a zoomed page can.
 - A record's hero carries a **live output meter** while something is playing. It reads
   real FFT magnitudes off the playback graph *after* normalization gain, so it moves with
   what you actually hear rather than to a timer. Desktop only, and off under
@@ -162,7 +167,13 @@ zipped album orders and names itself exactly like a real folder would.
   and *below quality*, plus multi-select for bulk artist edits and deletion
 - **Quality** — library statistics, loudness distribution, and the batch normalizer
 - **Settings** — appearance, target loudness and ceiling, track/album/off mode, limiter,
-  encoding target, artwork sizes, storage
+  encoding target, artwork sizes, storage, and a **Version** panel at the foot
+
+**Version** prints the build you are running and the offline cache the service worker is
+actually serving. When those two disagree you are looking at stale code, which is the
+usual reason a change does not show up after a deploy — **Check for update** re-fetches
+the worker, activates a waiting one and reloads. `APP_VERSION` in `js/util.js` and
+`VERSION` in `sw.js` are the two places the number is written; keep them in step.
 
 Click a row to play, click its cover to set artwork, click **⋮** for the full measurement
 readout and per-track actions.

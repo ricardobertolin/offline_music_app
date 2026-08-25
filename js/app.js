@@ -7,7 +7,7 @@ import { artUrl, normalizeBackdrop } from './image.js';
 import { opusAvailable } from './audio/oggopus.js';
 import { isZip, expand } from './zip.js';
 import {
-  $, $$, fmtTime, fmtBytes, fmtDb, escapeHtml, toast, debounce, sortBy,
+  $, $$, APP_VERSION, fmtTime, fmtBytes, fmtDb, escapeHtml, toast, debounce, sortBy,
 } from './util.js';
 
 const state = {
@@ -113,6 +113,7 @@ async function boot() {
   wirePlayer();
   registerSW();
   handleLaunchFiles();
+  bindVersion();
   $('#build-info').textContent =
     `Opus encoder: ${opusAvailable() ? 'available' : 'not available in this browser (WAV fallback)'} · ` +
     `Analysis at 48 kHz · Storage: IndexedDB`;
@@ -146,10 +147,89 @@ function renderRail() {
     : `Opus ${s.bitrate} · ${s.rate ? `${s.rate / 1000} k` : 'native'}`;
 }
 
+/** The registration, kept so Settings → Version can update and activate it. */
+let swReg = null;
+
 function registerSW() {
   if (!('serviceWorker' in navigator) || location.protocol === 'file:') return;
   // Resolved against the document, so this works from any GitHub Pages sub-path.
-  navigator.serviceWorker.register('./sw.js').catch((err) => console.warn('SW registration failed', err));
+  navigator.serviceWorker.register('./sw.js')
+    .then((reg) => {
+      swReg = reg;
+      reg.addEventListener('updatefound', () => reg.installing?.addEventListener('statechange', renderVersion));
+      renderVersion();
+    })
+    .catch((err) => console.warn('SW registration failed', err));
+}
+
+/* ================================= version ================================= */
+
+/** What the running service worker says its cache is called; null until it answers. */
+let swVersion = null;
+/** Set only when the user asked for the update, so the first-ever install —
+ *  which claims the page and fires the same event — does not reload under them. */
+let swUpdating = false;
+
+function bindVersion() {
+  $('#ver-app').textContent = APP_VERSION;
+  // Installed apps have no address bar to reload from, so they most need to see
+  // that a newer build is sitting there waiting.
+  $('#ver-mode').textContent =
+    matchMedia('(display-mode: standalone)').matches || navigator.standalone ? 'Yes — running standalone' : 'No — in a browser tab';
+
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.addEventListener('message', (e) => {
+      if (e.data?.type === 'version') { swVersion = e.data.version; renderVersion(); }
+    });
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (swUpdating) location.reload();
+      else { swVersion = null; renderVersion(); }
+    });
+  }
+
+  $('#btn-update').addEventListener('click', async () => {
+    if (!swReg) { toast('No offline cache to update here.'); return; }
+    const btn = $('#btn-update');
+    btn.disabled = true;
+    try {
+      await swReg.update();
+      const waiting = swReg.waiting;
+      if (waiting) {
+        // controllerchange (above) reloads once it has actually taken over.
+        swUpdating = true;
+        waiting.postMessage('skip-waiting');
+        toast('Updating…');
+      } else {
+        toast('Already up to date.');
+      }
+    } catch {
+      toast('Could not check — no network?', 'err');
+    } finally {
+      btn.disabled = false;
+      renderVersion();
+    }
+  });
+
+  renderVersion();
+}
+
+function renderVersion() {
+  const controller = navigator.serviceWorker?.controller;
+  if (controller && swVersion === null) controller.postMessage('version');
+
+  const el = $('#ver-sw');
+  el.textContent = !('serviceWorker' in navigator) ? 'Not supported'
+    : !controller ? 'Not active yet — reload'
+    : swVersion || 'Checking…';
+  // The two lines carry the same number when the cache is current. Say so in
+  // colour, because "why am I not seeing my change" is the whole point of this.
+  el.classList.toggle('stale', !!swVersion && swVersion !== `v${APP_VERSION}`);
+
+  $('#ver-state').textContent = swReg?.waiting
+    ? 'An update is downloaded and waiting. Check for update to switch to it.'
+    : swVersion && swVersion !== `v${APP_VERSION}`
+      ? 'The offline cache is older than this build — check for update, or reload twice.'
+      : 'Everything on this device is served from the offline cache; nothing is uploaded.';
 }
 
 /* ================================= layout ================================= */
@@ -1256,7 +1336,13 @@ function wirePlayer() {
   });
 
   // Tapping the mini player opens the second screen; ⌄ and Escape close it.
-  $('.t-now').addEventListener('click', () => openNow(true));
+  // The target is the whole bar, not just .t-now: at phone widths the controls
+  // squeeze that down to the cover and a clipped title, which is not something
+  // you find by accident. Anything you can actually operate is excluded.
+  $('#player').addEventListener('click', (e) => {
+    if (e.target.closest('button,input,label,.wave')) return;
+    openNow(true);
+  });
   $('#now-close').addEventListener('click', () => openNow(false));
   $('#now-more').addEventListener('click', () => player.track && openTrackDialog(player.track.id));
   // Growing past the fold leaves the phone screen stranded over a desktop layout.
