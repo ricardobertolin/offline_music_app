@@ -9,10 +9,10 @@ import { dirname, join } from 'node:path';
 const OUT = join(dirname(fileURLToPath(import.meta.url)), '..', 'icons');
 mkdirSync(OUT, { recursive: true });
 
-const BG = [0x0d, 0x0f, 0x14];
-const BG2 = [0x18, 0x22, 0x2c];
-const ACCENT = [0x5e, 0xe1, 0xa0];
-const ACCENT2 = [0x4a, 0xa8, 0xff];
+const BG = [0x0a, 0x0a, 0x0b];    // --ink-0
+const BG2 = [0x14, 0x14, 0x17];
+const ACCENT = [0xe2, 0x54, 0x2c]; // Rust, the default accent
+const WHITE = [0xff, 0xff, 0xff];
 
 const mix = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
 
@@ -23,32 +23,45 @@ const box = (x, y, x0, y0, x1, y1, r = 0) => {
   const dx = Math.max(x0 - x, 0, x - x1), dy = Math.max(y0 - y, 0, y - y1);
   return Math.hypot(dx, dy) - r;
 };
-const ellipse = (x, y, cx, cy, rx, ry) => (Math.hypot((x - cx) / rx, (y - cy) / ry) - 1) * Math.min(rx, ry);
+const segment = (x, y, ax, ay, bx, by, w) => {
+  const pax = x - ax, pay = y - ay, bax = bx - ax, bay = by - ay;
+  const h = Math.min(1, Math.max(0, (pax * bax + pay * bay) / (bax * bax + bay * bay)));
+  return Math.hypot(pax - bax * h, pay - bay * h) - w;
+};
 
-/** The mark: a vinyl ring with a quaver sitting in it. */
+/** The Offpress mark: a stylus dropped onto a record. The numbers are the CSS
+ *  mark's 18px geometry divided by 18, so icon and header stay the same shape. */
 function shade(x, y, inset) {
-  // inset shrinks the artwork for maskable icons (safe zone)
-  const u = (x - 0.5) / inset + 0.5;
-  const v = (y - 0.5) / inset + 0.5;
+  // inset shrinks the artwork for maskable icons (safe zone). 0.76 is the base
+  // framing: the record fills the tile without touching its edges.
+  const scale = inset * 0.76;
+  const u = (x - 0.5) / scale + 0.5;
+  const v = (y - 0.5) / scale + 0.5;
 
-  let color = mix(BG, BG2, Math.min(1, Math.max(0, (u + v) / 2)));
-  let alpha = 1;
+  let color = mix(BG2, BG, Math.min(1, Math.max(0, (x + y) / 2)));
 
-  const px = 1 / 512 / inset; // approximate pixel size for anti-aliasing
-  const paint = (dist, rgb) => {
-    const cover = Math.min(1, Math.max(0, 0.5 - dist / (2 * px)));
+  const px = 1 / 512 / scale; // approximate pixel size for anti-aliasing
+  const paint = (dist, rgb, alpha = 1) => {
+    const cover = Math.min(1, Math.max(0, 0.5 - dist / (2 * px))) * alpha;
     if (cover > 0) color = mix(color, rgb, cover);
   };
 
-  paint(ring(u, v, 0.5, 0.5, 0.345, 0.055), mix(ACCENT2, ACCENT, 0.35));
+  paint(ring(u, v, 0.5, 0.5, 0.4639, 0.0722), WHITE, 0.55);  // record edge
+  paint(ring(u, v, 0.5, 0.5, 0.275, 0.0611), WHITE, 0.34);   // label ring
+  // The tonearm crosses the whole record, clipped to its edge — the CSS mark
+  // gets that clip from overflow:hidden. It runs at the mark's -34°, offset so
+  // it passes 0.10 from the centre: near enough that a small label can break it
+  // even at 16px, which the design's wider offset cannot.
+  paint(Math.max(
+    segment(u, v, -0.0100, 0.7232, 1.0033, 0.0400, 0.0444),
+    circle(u, v, 0.5, 0.5, 0.5),
+  ), ACCENT);
+  // The label punches the arm out at the middle, so the line reads as an arm
+  // passing behind the record's centre rather than as a struck-through circle.
+  paint(circle(u, v, 0.5, 0.5, 0.155), BG);
+  paint(circle(u, v, 0.5, 0.5, 0.045), WHITE, 0.34);         // spindle hole
 
-  // note: stem + head + flag
-  const stem = box(u, v, 0.545, 0.285, 0.585, 0.60);
-  const head = ellipse(u, v, 0.485, 0.625, 0.105, 0.082);
-  const flag = box(u, v, 0.585, 0.285, 0.70, 0.335, 0.02);
-  paint(Math.min(stem, head, flag), ACCENT);
-
-  return [...color.map((c) => Math.round(Math.max(0, Math.min(255, c)))), Math.round(alpha * 255)];
+  return [...color.map((c) => Math.round(Math.max(0, Math.min(255, c)))), 255];
 }
 
 function render(size, { inset = 1, round = 0 } = {}) {
@@ -126,7 +139,9 @@ function png(size, rgba) {
 const targets = [
   ['icon-192.png', 192, { round: 0.16 }],
   ['icon-512.png', 512, { round: 0.16 }],
-  ['icon-maskable-512.png', 512, { inset: 0.72 }],  // content inside the safe zone
+  // The mark already occupies only 76% of the tile, so the maskable variant
+  // needs just a little more room to clear the 80% safe circle.
+  ['icon-maskable-512.png', 512, { inset: 0.95 }],
   ['apple-touch-icon.png', 180, {}],
 ];
 

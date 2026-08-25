@@ -100,7 +100,36 @@ export const DEFAULTS = {
   volume: 1,
   shuffle: false,
   repeat: 'off',            // off | all | one
+  accent: '#e2542c',        // appearance — see ACCENTS
+  haze: 0.08,               // grain opacity over covers and record heroes
+  tintedCovers: true,       // colour records that have no cover art
+  spinDisc: true,           // rotate the press on the transport while playing
+  backdrop: 'none',         // none | grooves | halftone | sleeve | image — see BACKDROPS
+  backdropMono: true,       // drain the colour out of an image backdrop
+  backdropDim: 0.35,        // scrim over an image backdrop, so text stays readable
+  backdropImage: null,      // Blob: the user's own backdrop, downscaled on save
+  liveMeter: true,          // animated output meter on the record hero while playing
 };
+
+/** The press-shop palette. Anything else the user picks still round-trips. */
+export const ACCENTS = [
+  { label: 'Rust', hex: '#e2542c' },
+  { label: 'Acid', hex: '#c8ea3a' },
+  { label: 'Sodium', hex: '#f0a52b' },
+  { label: 'Ultra', hex: '#5b5bf5' },
+  { label: 'Bleach', hex: '#e8e6e1' },
+  { label: 'Rave', hex: '#f23c8c' },
+];
+
+/** Window backdrops. The first four are drawn in CSS off the accent; "image"
+ *  renders whatever the user dropped into Settings → Appearance. */
+export const BACKDROPS = [
+  { key: 'none', label: 'Off' },
+  { key: 'grooves', label: 'Grooves' },
+  { key: 'halftone', label: 'Halftone' },
+  { key: 'sleeve', label: 'Sleeve' },
+  { key: 'image', label: 'Image' },
+];
 
 let cache = null;
 

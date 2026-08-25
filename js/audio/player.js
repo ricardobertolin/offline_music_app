@@ -15,6 +15,7 @@ export class Player {
     this.src = null;
     this.gainNode = null;
     this.limiterNode = null;
+    this.analyserNode = null;
     this.limiterOn = true;
     this.gainDb = 0;
     this.track = null;
@@ -53,6 +54,24 @@ export class Player {
     this.src.connect(this.gainNode);
     if (this.limiterOn) this.gainNode.connect(this.limiterNode).connect(this.ctx.destination);
     else this.gainNode.connect(this.ctx.destination);
+    // The meter hangs off the normalized signal on its own branch, so it shows
+    // what you actually hear without ever sitting in the path to the speakers.
+    if (this.analyserNode) this.gainNode.connect(this.analyserNode);
+  }
+
+  /**
+   * FFT node for the on-screen meter, built on first use. Null until the audio
+   * graph exists (which needs a user gesture), so callers must handle that.
+   * @returns {AnalyserNode|null}
+   */
+  analyser() {
+    if (this.analyserNode) return this.analyserNode;
+    if (!this.ctx) return null;
+    this.analyserNode = this.ctx.createAnalyser();
+    this.analyserNode.fftSize = 256;
+    this.analyserNode.smoothingTimeConstant = 0.72;
+    this.gainNode.connect(this.analyserNode);
+    return this.analyserNode;
   }
 
   setLimiter(on) {

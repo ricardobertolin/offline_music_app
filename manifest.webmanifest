@@ -1,6 +1,6 @@
 {
-  "name": "Offline Music — normalized library",
-  "short_name": "Offline Music",
+  "name": "Offpress — offline music",
+  "short_name": "Offpress",
   "description": "Offline music library that normalizes loudness (EBU R128), audio quality and artwork thumbnails entirely on device.",
   "start_url": "./index.html",
   "scope": "./",
@@ -8,8 +8,8 @@
   "display": "standalone",
   "display_override": ["window-controls-overlay", "standalone"],
   "orientation": "any",
-  "background_color": "#0d0f14",
-  "theme_color": "#0d0f14",
+  "background_color": "#0a0a0b",
+  "theme_color": "#0a0a0b",
   "categories": ["music", "entertainment", "utilities"],
   "icons": [
     { "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },

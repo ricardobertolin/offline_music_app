@@ -116,6 +116,8 @@ try {
       document.querySelector('#album-grid .album').click();
       await new Promise((r) => setTimeout(r, 200));
     }
+    document.querySelector('#btn-album-config').click();   // the order lives in the config menu
+    await new Promise((r) => setTimeout(r, 100));
     const sel = document.querySelector('#album-sort');
     sel.value = ${JSON.stringify(mode)};
     sel.dispatchEvent(new Event('change'));
@@ -145,6 +147,8 @@ try {
     document.querySelector('.tab[data-view="albums"]').click();
     document.querySelector('#album-grid .album').click();
     await new Promise((r) => setTimeout(r, 300));
+    document.querySelector('#btn-album-config').click();
+    await new Promise((r) => setTimeout(r, 100));
     return {
       mode: document.querySelector('#album-sort')?.value,
       tracks: [...document.querySelectorAll('#album-tracks .track .t1')].map((e) => e.textContent.trim()),
@@ -183,7 +187,10 @@ try {
 
   /* ---------- 5. renaming the album ---------- */
   const renamed = await page.evaluate(async () => {
-    document.querySelector('[data-album-act="rename"]').click();
+    document.querySelector('#btn-album-config').click();
+    await new Promise((r) => setTimeout(r, 100));
+    const menuOpen = !document.querySelector('#album-config').classList.contains('hidden');
+    document.querySelector('#album-config [data-album-act="rename"]').click();
     await new Promise((r) => setTimeout(r, 100));
     document.querySelector('#f-name').value = 'Late Night Tapes';
     document.querySelector('#f-artist').value = 'The Quiet Type';
@@ -193,6 +200,7 @@ try {
     const albums = await dbm.getAll('albums');
     const tracks = await dbm.getAll('tracks');
     return {
+      menuOpen,
       albums: albums.map((a) => ({ key: a.key, name: a.name, artist: a.artist, order: a.order?.length })),
       trackAlbums: [...new Set(tracks.map((t) => t.album))],
       trackKeys: [...new Set(tracks.map((t) => t.albumKey))],
@@ -200,6 +208,7 @@ try {
       order: [...document.querySelectorAll('#album-tracks .track .t1')].map((e) => e.textContent.trim()),
     };
   });
+  ok('the album config button opens its menu', renamed.menuOpen);
   eq('exactly one album record remains', renamed.albums.length, 1);
   eq('album renamed', renamed.albums[0].name, 'Late Night Tapes');
   eq('album artist set', renamed.albums[0].artist, 'The Quiet Type');
@@ -273,7 +282,9 @@ try {
     document.querySelector('.tab[data-view="albums"]').click();
     document.querySelector('#album-grid .album').click();
     await new Promise((r) => setTimeout(r, 200));
-    document.querySelector('[data-album-act="delete"]').click();
+    document.querySelector('#btn-album-config').click();
+    await new Promise((r) => setTimeout(r, 100));
+    document.querySelector('#album-config [data-album-act="delete"]').click();
     await new Promise((r) => setTimeout(r, 2000));
     const dbm = await import('./js/db.js');
     return {

@@ -153,6 +153,7 @@ export async function analyzeTrack(track, { onProgress } = {}) {
     truePeakDb: res.loudness.truePeakDb,
     samplePeakDb: res.loudness.samplePeakDb,
     hist: res.loudness.hist,
+    envelope: res.loudness.envelope,   // momentary loudness over time, for the scrubber
   };
   track.quality = res.quality;
   track.analyzed = true;

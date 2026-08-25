@@ -143,9 +143,11 @@ export function measureLoudness(channels, sampleRate, onProgress) {
   const lra = loudnessRange(shortTerm);
 
   const peaks = peakMeasure(channels, weights);
+  const envelope = envelopeFrom(hopSum, nHops, hop);
   onProgress?.(1);
 
   return {
+    envelope,
     integratedLufs: isFinite(integrated) ? round1(integrated) : null,
     lra: lra === null ? null : round1(lra),
     momentaryMaxLufs: isFinite(momentaryMax) ? round1(momentaryMax) : null,
@@ -161,6 +163,38 @@ export function measureLoudness(channels, sampleRate, onProgress) {
 }
 
 const round1 = (v) => Math.round(v * 10) / 10;
+
+/** Number of bins in the stored loudness envelope — enough shape for a scrubber
+ *  the width of a window, at 160 bytes per track. */
+export const ENVELOPE_BINS = 160;
+
+/**
+ * Momentary loudness over time, downsampled to a fixed bin count and scaled to
+ * the track's own loudest moment. This is the same K-weighted energy the LUFS
+ * figures come from, so the player draws measured data rather than decoration.
+ * @returns {Uint8Array} 0 = 40 LU below the track's peak moment, 255 = at it.
+ */
+function envelopeFrom(hopSum, nHops, hop) {
+  const out = new Uint8Array(ENVELOPE_BINS);
+  if (nHops <= 0) return out;
+  const RANGE = 40;
+  const lufs = new Float64Array(ENVELOPE_BINS);
+  let max = -Infinity;
+  for (let b = 0; b < ENVELOPE_BINS; b++) {
+    const from = Math.floor((b * nHops) / ENVELOPE_BINS);
+    const to = Math.max(from + 1, Math.floor(((b + 1) * nHops) / ENVELOPE_BINS));
+    let sum = 0, n = 0;
+    for (let h = from; h < to && h < nHops; h++) { sum += hopSum[h]; n++; }
+    lufs[b] = n ? energyToLufs(sum / (n * hop)) : -Infinity;
+    if (lufs[b] > max) max = lufs[b];
+  }
+  if (!isFinite(max)) return out;
+  for (let b = 0; b < ENVELOPE_BINS; b++) {
+    const rel = (lufs[b] - max + RANGE) / RANGE;
+    out[b] = Math.round(Math.max(0, Math.min(1, rel)) * 255);
+  }
+  return out;
+}
 
 /** Two-pass gating (absolute -70 LUFS, then relative -10 LU) over a block histogram. */
 export function integratedFromHistogram(hist) {

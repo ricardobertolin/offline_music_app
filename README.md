@@ -17,6 +17,9 @@ Each file is decoded once and measured to **ITU-R BS.1770-4 / EBU R128**:
 - **Loudness range** (LRA, EBU Tech 3342) and momentary/short-term maxima
 - **True peak** in dBTP, 4× oversampled — it catches inter-sample peaks that a sample
   peak meter reports 3 dB too low
+- A 160-bin **momentary-loudness envelope**, which is what the transport's scrubber
+  draws. A track that has not been analyzed gets a flat strip rather than a made-up
+  waveform — it still scrubs, it just doesn't claim anything.
 
 Playback then applies `target − measured` as a gain on the Web Audio graph, pulled back
 automatically so the true peak never crosses your ceiling (default −1 dBTP). Nothing is
@@ -49,22 +52,56 @@ optionally bakes in the loudness gain → re-encodes:
 - Files already better than the target are skipped by default (re-encoding them only
   loses quality), and the original can be kept so the operation stays reversible
 
-### Albums
-Click an album to open just its tracks. Inside:
+### The interface
+Condensed uppercase display type, monospaced microtype, hairline rules, no rounded
+corners, one accent colour — the **Offpress** design.
 
+- A **rail** on the left holds the three destinations (Records, Tracks, Quality) with
+  live counts, the library filters, and a footer readout of what is cached and what the
+  encoder is aimed at. Settings sits at its foot. Under 860 px the rail folds into a
+  scrolling strip under the header, and the header's search drops to its own line.
+- The **transport** carries the mini cover (with the press turning while it plays), the
+  transport buttons, the applied normalization gain, and the loudness-envelope scrubber.
+- A record's hero carries a **live output meter** while something is playing. It reads
+  real FFT magnitudes off the playback graph *after* normalization gain, so it moves with
+  what you actually hear rather than to a timer. Desktop only, and off under
+  `prefers-reduced-motion`.
+- **Settings → Appearance** picks the accent from the six press-shop colours or any colour
+  you like, sets how much grain sits over covers, and toggles the record tinting, the
+  turning press and the live meter. The ink on the accent is chosen from its luminance, so
+  the near-white "Bleach" stays readable without a second setting to get wrong.
+- **Settings → Backdrop** puts a wallpaper behind the whole window. *Grooves*, *Halftone*
+  and *Sleeve* are drawn in CSS from the accent colour and cost nothing. *Image* uses a
+  picture you choose: it is downscaled to 1920 px on the longest edge, stored in IndexedDB
+  like everything else, and never uploaded. It is desaturated and darkened by default, and
+  a **Dim** slider sets how much ink sits between the picture and the interface. Whenever a
+  backdrop is on, the chrome, rail, panels and transport go translucent so it reads through.
+- The **mark** — a stylus resting on a record — is the same geometry in the header, in
+  `icons/icon.svg` and in the generated PNG icons, so the installed app looks like the app.
+- Fonts come from Google Fonts and are cached by the service worker on first load; before
+  that, and if they never load at all, the app falls back to a local condensed/mono stack.
+
+### Records
+Click a record to open just its tracks. Inside:
+
+- **Play** and **Shuffle** are the only two buttons. Everything else lives behind
+  **⚙ Configure**: track order, edit name and artist, set cover, normalize quality,
+  delete record.
 - **Track order** defaults to **folder order** — the order the files were imported in,
   compared numerically, so `2 - x` comes before `10 - y`. Tags are frequently missing or
   wrong; the folder rarely is. You can switch to track number from tags, to title, or
-  **drag any row** to build a custom order, which is stored per album and survives
+  **drag any row** to build a custom order, which is stored per record and survives
   reloads, re-analysis, renames and later imports (new tracks join the end).
-- **Edit album…** sets the album name and album artist across every track in it, with an
-  opt-in to push that artist down onto each track's own artist too — right for a
-  single-artist album, wrong for a compilation, so it is a choice rather than a default.
-  Renaming onto an existing album merges the two.
+- **Edit name & artist…** applies across every track on the record, with an opt-in to
+  push that artist down onto each track's own artist too — right for a single-artist
+  record, wrong for a compilation, so it is a choice rather than a default. Renaming onto
+  an existing record merges the two.
+- A record with no cover is not given a placeholder: it keeps a printed face, tinted by a
+  hue derived from its own key, with its name and track count set into the corner.
 - An untagged file is filed under **the folder it came from** rather than a single giant
   "Unknown Album", and dropping a folder onto the window imports the whole tree with its
   paths intact.
-- **Delete album** removes every track in it, its audio, and any artwork left orphaned.
+- **Delete record** removes every track in it, its audio, and any artwork left orphaned.
 
 ### Editing tags
 **⋮ → Edit details** on any track edits title, artist, album, album artist, track and disc
@@ -113,13 +150,13 @@ a time, so a multi-gigabyte archive of FLACs behaves like a small one. Store and
 are supported, along with ZIP64 and UTF-8 entry names; each entry keeps its path, so a
 zipped album orders and names itself exactly like a real folder would.
 
-- **Tracks** — everything, searchable, with filters for *not analyzed*, *off-target
-  loudness* and *below quality target*, plus multi-select for bulk artist edits and deletion
-- **Albums** — cover grid; click through to an album to reorder, edit its name and artist,
-  set a cover, play it, or normalize the whole thing
+- **Records** — cover grid; click through to a record to play it, shuffle it, or open
+  **⚙ Configure** to reorder, rename, set a cover, normalize or delete it
+- **Tracks** — everything, searchable, with rail filters for *not analyzed*, *off target*
+  and *below quality*, plus multi-select for bulk artist edits and deletion
 - **Quality** — library statistics, loudness distribution, and the batch normalizer
-- **Settings** — target loudness and ceiling, track/album/off mode, limiter, encoding
-  target, artwork sizes, storage
+- **Settings** — appearance, target loudness and ceiling, track/album/off mode, limiter,
+  encoding target, artwork sizes, storage
 
 Click a row to play, click its cover to set artwork, click **⋮** for the full measurement
 readout and per-track actions.
@@ -145,11 +182,11 @@ Ogg muxer, WAV writer and the ID3 / FLAC / MP4 / Ogg parsers. They also build re
 archives with Node's zlib and read them back through `js/zip.js`, covering store, deflate,
 ZIP64, UTF-8 names, trailing comments and corrupt entries.
 
-The UI test imports synthetic files into a real IndexedDB, then exercises album opening,
-every sort mode, drag-to-reorder, renaming, multi-select with shift-ranges, bulk deletion,
-album deletion, artwork ownership, tag editing (including a track moving between albums)
-and importing an album from a .zip — checking along the way that no audio blobs or covers
-are left behind.
+The UI test imports synthetic files into a real IndexedDB, then exercises opening a
+record, the Configure menu, every sort mode, drag-to-reorder, renaming, multi-select with
+shift-ranges, bulk deletion, record deletion, artwork ownership, tag editing (including a
+track moving between records) and importing a record from a .zip — checking along the way
+that no audio blobs or covers are left behind.
 
 On `localhost` the service worker fetches from the network first, so a reload always
 shows the code you just edited; on a real host it stays cache-first for offline use.

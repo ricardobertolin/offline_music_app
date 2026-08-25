@@ -2,9 +2,14 @@
    App shell is cache-first (works fully offline); the library itself lives in IndexedDB,
    so audio never goes through here. Also implements the Web Share Target hand-off. */
 
-const VERSION = 'v1.4.0';
+const VERSION = 'v2.1.0';
 const SHELL = `shell-${VERSION}`;
 const SHARE = 'share-inbox';
+// Webfonts are cross-origin and versioned by URL, so they get their own cache
+// that survives shell upgrades. Without this the app falls back to the local
+// condensed/mono stack when offline, which is legible but off-design.
+const FONTS = 'fonts-v1';
+const FONT_HOSTS = ['fonts.googleapis.com', 'fonts.gstatic.com'];
 
 // On localhost the cache only gets in the way: always try the network first so a
 // reload shows the code you just edited, and fall back to the cache when offline.
@@ -33,6 +38,7 @@ const ASSETS = [
   './icons/icon.svg',
   './icons/icon-192.png',
   './icons/icon-512.png',
+  './icons/apple-touch-icon.png',
 ];
 
 self.addEventListener('install', (e) => {
@@ -68,7 +74,26 @@ self.addEventListener('fetch', (e) => {
     e.respondWith(handleShare(e));
     return;
   }
-  if (req.method !== 'GET' || url.origin !== self.location.origin) return;
+  if (req.method !== 'GET') return;
+
+  // Cache-first for webfonts; an opaque response is fine, it only has to replay.
+  if (FONT_HOSTS.includes(url.hostname)) {
+    e.respondWith((async () => {
+      const cache = await caches.open(FONTS);
+      const hit = await cache.match(req);
+      if (hit) return hit;
+      try {
+        const res = await fetch(req);
+        if (res.ok || res.type === 'opaque') cache.put(req, res.clone());
+        return res;
+      } catch {
+        return new Response('', { status: 504 });
+      }
+    })());
+    return;
+  }
+
+  if (url.origin !== self.location.origin) return;
 
   // Navigations: serve the shell, fall back to network.
   if (req.mode === 'navigate') {

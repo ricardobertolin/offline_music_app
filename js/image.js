@@ -145,6 +145,50 @@ export async function saveArtwork(source, settings) {
   return art;
 }
 
+/**
+ * A backdrop covers the whole window, so unlike a cover it keeps its aspect
+ * ratio — it is only capped in size, so a 6000 px phone photo does not sit in
+ * IndexedDB (and in memory) at full resolution for the sake of a wallpaper.
+ * @param {Blob|File} source
+ * @param {number} max longest edge, in pixels
+ * @returns {Promise<Blob>}
+ */
+export async function normalizeBackdrop(source, max = 1920) {
+  const blob = toBlobSource(source);
+  let bitmap;
+  try {
+    bitmap = await createImageBitmap(blob, { imageOrientation: 'from-image' });
+  } catch {
+    bitmap = await createImageBitmap(blob);
+  }
+
+  const scale = Math.min(1, max / Math.max(bitmap.width, bitmap.height));
+  if (scale === 1 && blob.size < 900_000) { bitmap.close?.(); return blob; }
+
+  let src = bitmap, w = bitmap.width, h = bitmap.height;
+  const tw = Math.max(1, Math.round(bitmap.width * scale));
+  const th = Math.max(1, Math.round(bitmap.height * scale));
+  // Same halving pass as covers: one giant drawImage aliases badly.
+  while (w > tw * 2) {
+    const hw = Math.max(tw, Math.round(w / 2)), hh = Math.max(th, Math.round(h / 2));
+    const c = makeCanvas(hw, hh);
+    const g = c.getContext('2d');
+    g.imageSmoothingQuality = 'high';
+    g.drawImage(src, 0, 0, w, h, 0, 0, hw, hh);
+    if (src !== bitmap && src.close) src.close();
+    src = c; w = hw; h = hh;
+  }
+
+  const out = makeCanvas(tw, th);
+  const ctx = out.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(src, 0, 0, w, h, 0, 0, tw, th);
+  if (src !== bitmap && src.close) src.close();
+  bitmap.close?.();
+  return toBlob(out, ART_MIME, 0.85);
+}
+
 /* -------------------------------- URL cache ------------------------------- */
 
 const urls = new Map(); // `${id}:${kind}` → objectURL

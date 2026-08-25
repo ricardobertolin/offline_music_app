@@ -3,7 +3,7 @@
 import * as db from './db.js';
 import * as lib from './library.js';
 import { Player } from './audio/player.js';
-import { artUrl } from './image.js';
+import { artUrl, normalizeBackdrop } from './image.js';
 import { opusAvailable } from './audio/oggopus.js';
 import { isZip, expand } from './zip.js';
 import {
@@ -30,6 +30,67 @@ const state = {
 
 const player = new Player();
 
+/* ================================== theme ================================== */
+
+/** Perceived luminance decides the ink that sits on the accent — "Bleach" is
+ *  nearly white and would be unreadable with the dark default. */
+function inkFor(hex) {
+  const n = parseInt(String(hex).slice(1), 16);
+  if (!isFinite(n)) return '#0a0a0b';
+  const [r, g, b] = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((v) => {
+    const s = v / 255;
+    return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.35 ? '#0a0a0b' : '#ffffff';
+}
+
+function applyTheme() {
+  const s = state.settings;
+  const el = document.documentElement;
+  el.style.setProperty('--accent', s.accent);
+  el.style.setProperty('--accent-ink', inkFor(s.accent));
+  el.style.setProperty('--haze', String(s.haze));
+  el.style.setProperty('--backdrop-dim', String(s.backdropDim));
+  // The pattern backdrops and every pane's translucency key off these, so the
+  // whole switch is one attribute rather than a pile of inline styles.
+  el.dataset.backdrop = s.backdrop || 'none';
+  el.dataset.backdropMono = s.backdropMono ? 'on' : 'off';
+  $('#p-art-box')?.classList.toggle('spin', !!s.spinDisc && player.playing);
+}
+
+/** The object URL for the stored backdrop, revoked whenever it is replaced. */
+let backdropUrl = null;
+
+/** Point the backdrop <img> at whatever blob is in settings (or nothing). */
+function applyBackdropImage() {
+  const blob = state.settings.backdropImage;
+  if (backdropUrl) { URL.revokeObjectURL(backdropUrl); backdropUrl = null; }
+  if (blob instanceof Blob) backdropUrl = URL.createObjectURL(blob);
+  for (const img of [$('#backdrop-img'), $('#backdrop-thumb')]) {
+    if (!img) continue;
+    if (backdropUrl) { img.src = backdropUrl; img.classList.remove('is-empty'); }
+    else { img.removeAttribute('src'); img.classList.add('is-empty'); }
+  }
+}
+
+/** Stable hue per record, so one without a cover still has a colour of its own. */
+function hueOf(key) {
+  let h = 0;
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) % 360;
+  return h;
+}
+
+/** Inline custom properties for a record's printed base and its hero wash. */
+function tintOf(key) {
+  const tinted = state.settings?.tintedCovers ?? true;
+  const hue = tinted ? hueOf(String(key || '')) : 30;
+  const sat = tinted ? '14%' : '5%';
+  return {
+    cover: `linear-gradient(158deg, hsl(${hue} ${sat} 30%) 0%, hsl(${hue} ${sat} 14%) 58%, #0b0b0d 100%)`,
+    wash: `radial-gradient(90% 120% at 20% 0%, hsl(${hue} ${sat} 26%) 0%, hsl(${hue} ${sat} 12%) 45%, #0a0a0b 100%)`,
+  };
+}
+
 /* ================================ bootstrap ================================ */
 
 boot().catch((err) => {
@@ -42,7 +103,10 @@ async function boot() {
   // Without WebCodecs there is no Opus encoder, so the target has to be WAV —
   // otherwise every track would look like it misses a target it can never hit.
   if (!opusAvailable() && state.settings.codec === 'opus') await db.setSetting('codec', 'wav');
+  applyTheme();
+  applyBackdropImage();
   bindUI();
+  setContext(VIEW_CTX[state.view]);
   applySettingsToUI();
   await lib.migrateLibrary();   // rebuild album keys / import positions if needed
   await reload();
@@ -64,7 +128,22 @@ function renderAll() {
   renderTracks();
   renderAlbums();
   renderQuality();
+  renderRail();
   updateStorageInfo();
+}
+
+/** The rail's counts and the two readouts under them. */
+function renderRail() {
+  const s = state.settings;
+  const outliers = state.tracks.filter((t) => lib.needsQualityNormalization(t, s)).length;
+  $('#n-albums').textContent = state.albums.length;
+  $('#n-tracks').textContent = state.tracks.length;
+  $('#n-quality').textContent = outliers;
+  const bytes = state.tracks.reduce((a, t) => a + (t.size || 0), 0);
+  $('#rail-cached').textContent = state.tracks.length ? `${state.tracks.length} trk · ${fmtBytes(bytes)}` : 'empty';
+  $('#rail-out').textContent = s.codec === 'wav'
+    ? `WAV · ${s.rate ? `${s.rate / 1000} k` : 'native'}`
+    : `Opus ${s.bitrate} · ${s.rate ? `${s.rate / 1000} k` : 'native'}`;
 }
 
 function registerSW() {
@@ -76,12 +155,16 @@ function registerSW() {
 /* ================================= layout ================================= */
 
 function bindUI() {
-  $$('.tab').forEach((tab) => tab.addEventListener('click', () => showView(tab.dataset.view)));
+  $$('.tab').forEach((tab) => tab.addEventListener('click', () => {
+    // Pressing Records always lands on the grid, even from inside an open record.
+    if (tab.dataset.view === 'albums' && state.album) openAlbum(null);
+    showView(tab.dataset.view);
+  }));
 
   bindAddMenu();
   $('#btn-add-track').addEventListener('click', () => $('#file-input').click());
+  // "Add album" here has its own menu, wired in bindAddMenu.
   $('#tracks-empty').addEventListener('click', (e) => {
-    if (e.target.dataset.act === 'album') openAddMenu(true);
     if (e.target.dataset.act === 'track') $('#file-input').click();
   });
   for (const id of ['#file-input', '#dir-input', '#zip-input']) {
@@ -98,6 +181,9 @@ function bindUI() {
     if (!chip) return;
     $$('#track-filters .chip').forEach((c) => c.classList.toggle('is-active', c === chip));
     state.filter = chip.dataset.filter;
+    // The filters live in the rail, so picking one has to take you to the list
+    // it actually filters.
+    showView('tracks');
     renderTracks();
   });
   $('#track-sort').addEventListener('change', (e) => { state.sort = e.target.value; renderTracks(); });
@@ -121,6 +207,10 @@ function bindUI() {
   bindSettings();
   bindDropZone();
 
+  // Crossing the 860px fold hides or shows the hero meter, so the loop has to
+  // follow the layout.
+  window.addEventListener('resize', debounce(syncMeter, 200));
+
   document.addEventListener('keydown', (e) => {
     // Don't hijack keys meant for a form control, a focused button or a dialog.
     if (e.target.matches('input,select,textarea,button') || $('dialog[open]')) return;
@@ -136,36 +226,67 @@ function bindUI() {
   });
 }
 
-/** "Add album" offers a folder or a .zip — one <input> cannot do both. */
+/**
+ * "Add album" offers a folder or a .zip — one <input> cannot do both. The empty
+ * state gets its own copy of the menu rather than borrowing the header's: the
+ * only thing a first-time user is looking at is the middle of the page, and a
+ * menu that opens in the far corner is not an answer.
+ */
 function bindAddMenu() {
-  const btn = $('#btn-add-album');
-  const menu = $('#add-album-menu');
-  btn.addEventListener('click', (e) => { e.stopPropagation(); openAddMenu(menu.classList.contains('hidden')); });
-  menu.addEventListener('click', (e) => {
-    const item = e.target.closest('.menu-item');
-    if (!item) return;
-    openAddMenu(false);
-    $(item.dataset.source === 'zip' ? '#zip-input' : '#dir-input').click();
-  });
-  document.addEventListener('click', () => openAddMenu(false));
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') openAddMenu(false); });
+  for (const [btn, menu] of [['#btn-add-album', '#add-album-menu'], ['#btn-empty-album', '#empty-album-menu']]) {
+    const m = $(menu);
+    bindPopover($(btn), m);
+    m.addEventListener('click', (e) => {
+      const item = e.target.closest('.menu-item');
+      if (!item) return;
+      closeMenus();
+      $(item.dataset.source === 'zip' ? '#zip-input' : '#dir-input').click();
+    });
+  }
+  document.addEventListener('click', closeMenus);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenus(); });
 }
 
-function openAddMenu(show) {
-  const menu = $('#add-album-menu');
-  if (!menu) return;
-  menu.classList.toggle('hidden', !show);
-  $('#btn-add-album').setAttribute('aria-expanded', String(!!show));
-  if (show) menu.querySelector('.menu-item')?.focus();
+/**
+ * Wire a button to the .menu that follows it. Menus stay in the DOM and are
+ * only hidden, so anything inside keeps its id and its event bindings.
+ */
+function bindPopover(btn, menu) {
+  if (!btn || !menu) return;
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const show = menu.classList.contains('hidden');
+    closeMenus();
+    menu.classList.toggle('hidden', !show);
+    btn.setAttribute('aria-expanded', String(show));
+    // Focus an item, never the order <select> — focusing a control inside the
+    // hero scrolls it out of view the moment the menu opens.
+    if (show) menu.querySelector('.menu-item')?.focus();
+  });
+  // Clicks inside a menu must not reach the document closer.
+  menu.addEventListener('click', (e) => e.stopPropagation());
 }
+
+function closeMenus() {
+  $$('.menu').forEach((m) => m.classList.add('hidden'));
+  $$('[aria-haspopup]').forEach((b) => b.setAttribute('aria-expanded', 'false'));
+}
+
+const VIEW_CTX = { tracks: 'Tracks', albums: 'Records', quality: 'Quality', settings: 'Settings' };
 
 function showView(view) {
   state.view = view;
   $$('.tab').forEach((t) => t.classList.toggle('is-active', t.dataset.view === view));
   $$('.view').forEach((v) => v.classList.toggle('is-active', v.dataset.view === view));
+  setContext(view === 'albums' && state.album
+    ? state.albums.find((a) => a.key === state.album)?.name
+    : VIEW_CTX[view]);
   if (view === 'quality') renderQuality();
   if (view === 'settings') updateStorageInfo();
+  syncMeter();   // the hero meter only runs while its hero is on screen
 }
+
+const setContext = (label) => { $('#chrome-ctx').textContent = label || 'Library'; };
 
 function bindDropZone() {
   let depth = 0;
@@ -334,7 +455,13 @@ function visibleTracks() {
   return sortBy(list, key);
 }
 
-function trackRow(t, { compact = false, checkbox = false, draggable = false, picked = false } = {}) {
+/**
+ * @param {object} o
+ * @param {'album'|'style'} [o.secondary] third column: the album, or the genre —
+ *        inside a record the album name is the same on every row, so it earns
+ *        its space by carrying the style instead.
+ */
+function trackRow(t, { compact = false, checkbox = false, draggable = false, picked = false, secondary = 'album' } = {}) {
   const g = lib.gainFor(t, state.settings, albumOf(t));
   const q = t.quality;
   const lufs = t.loudness?.integratedLufs;
@@ -344,12 +471,14 @@ function trackRow(t, { compact = false, checkbox = false, draggable = false, pic
       : '<span class="badge pending">analyzing…</span>')
     : `<span class="badge ${q?.tier || 'pending'}" title="${escapeHtml((q?.flags || []).join(' · ') || 'No issues found')}">${q?.tier || '—'} ${q?.score ?? ''}</span>`;
 
-  const right = compact
-    ? `<div class="num">${q?.bitrateKbps ? `${q.bitrateKbps} kbps` : '—'}</div>
-       <div class="t3">${escapeHtml(t.codec || t.container)} ${t.sampleRate ? `· ${(t.sampleRate / 1000).toFixed(1)} kHz` : ''}</div>`
-    : `<div class="t3">${escapeHtml(t.album || '')}</div>
-       <div class="num">${fmtTime(t.duration)}</div>
-       <div class="num lufs" title="Integrated loudness · gain applied ${fmtDb(g.gainDb)} dB">${lufs != null ? `${lufs.toFixed(1)}` : '—'} <span class="muted">LUFS</span></div>`;
+  const cols = compact
+    ? `<div class="t3">${escapeHtml(t.codec || t.container || '')}${t.sampleRate ? ` · ${(t.sampleRate / 1000).toFixed(1)} kHz` : ''}</div>
+       <div>${badge}</div>
+       <div class="num kbps">${q?.bitrateKbps ? `${q.bitrateKbps} kbps` : '—'}</div>`
+    : `<div class="t3">${escapeHtml(secondary === 'style' ? (t.genre || t.codec || t.container || '') : (t.album || ''))}</div>
+       <div>${badge}</div>
+       <div class="num lufs" title="Integrated loudness · gain applied ${fmtDb(g.gainDb)} dB">${lufs != null ? lufs.toFixed(1) : '—'}</div>
+       <div class="num">${fmtTime(t.duration)}</div>`;
 
   const cls = [
     'track',
@@ -359,15 +488,18 @@ function trackRow(t, { compact = false, checkbox = false, draggable = false, pic
     checkbox && picked ? 'is-picked' : '',
   ].filter(Boolean).join(' ');
 
+  const face = checkbox
+    ? `<input type="checkbox" class="sel" data-id="${t.id}"${picked ? ' checked' : ''} aria-label="Select ${escapeHtml(t.title)}">`
+    : `<div class="tile" style="--cover:${tintOf(t.albumKey).cover}" title="Click to set artwork">
+         <img data-art="${t.artId || ''}" class="is-empty" alt=""></div>`;
+
   return `<div class="${cls}" data-id="${t.id}"${draggable ? ' draggable="true"' : ''}>
-    ${checkbox ? `<input type="checkbox" class="sel" data-id="${t.id}"${picked ? ' checked' : ''} aria-label="Select ${escapeHtml(t.title)}">`
-              : `<img class="art" data-art="${t.artId || ''}" alt="" title="Click to set artwork">`}
+    ${face}
     <div class="col">
       <div class="t1">${escapeHtml(t.title)}</div>
-      <div class="t2">${escapeHtml(t.artist)}${t.transcode ? ' · <span class="muted">normalized</span>' : ''}</div>
+      <div class="t2">${escapeHtml(t.artist)}${t.transcode ? ' · normalized' : ''}</div>
     </div>
-    ${right}
-    <div>${badge}</div>
+    ${cols}
     <button class="kebab" data-menu="${t.id}" title="Details">⋮</button>
   </div>`;
 }
@@ -376,6 +508,7 @@ function renderTracks() {
   const list = visibleTracks();
   const box = $('#track-list');
   $('#tracks-empty').classList.toggle('hidden', state.tracks.length > 0);
+  $('#tracks-head').classList.toggle('hidden', list.length === 0);
   box.innerHTML = list.map((t) =>
     trackRow(t, { checkbox: state.selectMode, picked: state.picked.has(t.id) })).join('');
   if (!state.selectMode) hydrateArt(box);
@@ -427,21 +560,14 @@ function pickRange(id) {
   for (let i = lo; i <= hi; i++) markPicked(ids[i], true);
 }
 
+/** A record with no cover keeps its printed face — there is no placeholder
+ *  image to swap in, so the img is simply left empty and hidden. */
 async function hydrateArt(root) {
   for (const img of $$('img[data-art]', root)) {
-    const id = img.dataset.art;
-    if (!id) { img.src = placeholderArt(); continue; }
-    const url = await artUrl(id, 'thumb');
-    img.src = url || placeholderArt();
+    const url = img.dataset.art ? await artUrl(img.dataset.art, img.dataset.size || 'thumb') : null;
+    if (url) { img.src = url; img.classList.remove('is-empty'); }
+    else { img.removeAttribute('src'); img.classList.add('is-empty'); }
   }
-}
-
-let placeholder = null;
-function placeholderArt() {
-  if (placeholder) return placeholder;
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="#1b2029"/><path fill="#39435a" d="M38 16v18.6A8 8 0 1 0 42 42V24h6v-8z"/></svg>`;
-  placeholder = `data:image/svg+xml;base64,${btoa(svg)}`;
-  return placeholder;
 }
 
 function onTrackListClick(e) {
@@ -472,7 +598,7 @@ function onTrackListClick(e) {
     updateSelectionBar();
     return;
   }
-  if (e.target.closest('img.art')) { pickArtFor({ trackId: row.dataset.id }); return; }
+  if (e.target.closest('.tile')) { pickArtFor({ trackId: row.dataset.id }); return; }
   playTrack(row.dataset.id, visibleContextFor(row));
 }
 
@@ -491,23 +617,34 @@ function renderAlbums() {
   const grid = $('#album-grid');
   const detail = $('#album-detail');
   const back = $('#btn-album-back');
+  const head = $('#albums-head');
   if (state.album) {
     grid.classList.add('hidden');
+    head.classList.add('hidden');
     detail.classList.remove('hidden');
     back.classList.remove('hidden');
     renderAlbumDetail(state.album);
     return;
   }
   grid.classList.remove('hidden');
+  head.classList.remove('hidden');
   detail.classList.add('hidden');
   back.classList.add('hidden');
   const albums = sortBy(state.albums, (a) => `${a.artist} ${a.year} ${a.name}`.toLowerCase());
-  grid.innerHTML = albums.map((a) => `
-    <div class="album" data-key="${escapeHtml(a.key)}">
-      <img data-art="${a.artId || ''}" alt="">
+  grid.innerHTML = albums.map((a) => {
+    const current = player.track?.albumKey === a.key;
+    return `<div class="album${current ? ' is-current' : ''}" data-key="${escapeHtml(a.key)}">
+      <div class="tile" style="--cover:${tintOf(a.key).cover}">
+        <img data-art="${a.artId || ''}" class="is-empty" alt="">
+        <div class="tile-cap">
+          <b>${escapeHtml(a.name)}</b>
+          <span>${a.trackCount} track${a.trackCount === 1 ? '' : 's'}</span>
+        </div>
+      </div>
       <div class="a1">${escapeHtml(a.name)}</div>
-      <div class="a2">${escapeHtml(a.artist)} · ${a.trackCount} track${a.trackCount > 1 ? 's' : ''}${a.integratedLufs != null ? ` · ${a.integratedLufs} LUFS` : ''}</div>
-    </div>`).join('') || '<p class="muted">No albums yet.</p>';
+      <div class="a2">${escapeHtml(a.artist)}${a.integratedLufs != null ? ` · ${a.integratedLufs} LUFS` : ''}</div>
+    </div>`;
+  }).join('') || '<p class="hint">No records yet.</p>';
   hydrateArt(grid);
 }
 
@@ -519,6 +656,7 @@ function onAlbumGridClick(e) {
 function openAlbum(key) {
   state.album = key;
   renderAlbums();
+  setContext(key ? state.albums.find((a) => a.key === key)?.name : VIEW_CTX.albums);
 }
 
 function renderAlbumDetail(key) {
@@ -528,44 +666,91 @@ function renderAlbumDetail(key) {
   const gain = state.settings.mode === 'album' && album.integratedLufs != null
     ? state.settings.targetLufs - album.integratedLufs : null;
 
+  const tint = tintOf(key);
+  const pending = album.trackCount - album.analyzedTracks;
   const el = $('#album-detail');
   el.innerHTML = `
-    <div class="head">
-      <img data-art="${album.artId || ''}" alt="">
-      <div>
-        <h2>${escapeHtml(album.name)}</h2>
-        <div class="muted">${escapeHtml(album.artist)}${album.year ? ` · ${escapeHtml(album.year)}` : ''} · ${album.trackCount} tracks · ${fmtTime(album.duration)} · ${fmtBytes(album.bytes)}</div>
-        <div class="muted small" style="margin-top:8px">
-          Album loudness: <b>${album.integratedLufs != null ? `${album.integratedLufs} LUFS` : '—'}</b>
-          ${gain != null ? ` · album gain ${fmtDb(gain)} dB` : ''}
-          ${album.truePeakDb != null ? ` · peak ${fmtDb(album.truePeakDb)} dBTP` : ''}
-          ${album.analyzedTracks < album.trackCount ? ` · ${album.trackCount - album.analyzedTracks} not analyzed` : ''}
+    <div class="hero" style="--wash:${tint.wash};--cover:${tint.cover}">
+      <div class="hero-wash"></div>
+      <div class="hero-grain"></div>
+      <div class="hero-fade"></div>
+      <div class="hero-body">
+        <button class="tile" data-album-act="art" title="Set the record cover">
+          <img data-art="${album.artId || ''}" data-size="full" class="is-empty" alt="">
+          <div class="tile-cap">
+            <b>${escapeHtml(album.name)}</b>
+            <span>${album.trackCount} track${album.trackCount === 1 ? '' : 's'}</span>
+          </div>
+        </button>
+        <div class="hero-text">
+          <div class="eyebrow">Record</div>
+          <h2 class="display">${escapeHtml(album.name)}</h2>
+          <div class="hero-by">
+            <span>${escapeHtml(album.artist)}</span>
+            ${album.year ? `<i>/</i><span class="dim">${escapeHtml(album.year)}</span>` : ''}
+          </div>
+          <div class="hero-meta">
+            <span>${album.trackCount} track${album.trackCount === 1 ? '' : 's'} (${fmtTime(album.duration)})</span>
+            <span>${fmtBytes(album.bytes)}</span>
+            ${album.integratedLufs != null
+    ? `<span class="press" title="Gated over every block of every track on the record${gain != null ? ` · album gain ${fmtDb(gain)} dB` : ''}${album.truePeakDb != null ? ` · peak ${fmtDb(album.truePeakDb)} dBTP` : ''}">${album.integratedLufs} LUFS</span>`
+    : '<span class="press off">Not analyzed</span>'}
+            ${pending > 0 && album.integratedLufs != null ? `<span class="press off">${pending} pending</span>` : ''}
+          </div>
         </div>
-        <div class="row">
-          <button class="btn primary" data-album-act="play">Play album</button>
-          <button class="btn" data-album-act="rename">Edit album…</button>
-          <button class="btn" data-album-act="art">Set album cover</button>
-          <button class="btn" data-album-act="normalize">Normalize album quality</button>
-          <button class="btn danger" data-album-act="delete">Delete album</button>
+        <div class="hero-meter" id="hero-meter" aria-hidden="true"></div>
+      </div>
+      <div class="hero-actions">
+        <button class="btn primary" data-album-act="play">Play</button>
+        <button class="btn" data-album-act="shuffle">Shuffle</button>
+        <div class="menu-wrap">
+          <button class="linkbtn" id="btn-album-config" aria-haspopup="true" aria-expanded="false">⚙ Configure</button>
+          <div class="menu hidden" id="album-config" role="menu">
+            <div class="menu-sec">
+              <label class="menu-label" for="album-sort">Track order</label>
+              <select id="album-sort">
+                ${Object.entries(lib.ALBUM_SORTS).map(([v, label]) =>
+    `<option value="${v}"${album.sortMode === v ? ' selected' : ''}>${escapeHtml(label)}</option>`).join('')}
+              </select>
+              <p class="menu-hint">Drag a row to place it by hand — that switches the record to a custom order.</p>
+            </div>
+            <div class="menu-sep"></div>
+            <button class="menu-item" data-album-act="rename" role="menuitem">
+              <b>Edit name &amp; artist…</b><span>Applies to all ${album.trackCount} track${album.trackCount === 1 ? '' : 's'}</span>
+            </button>
+            <button class="menu-item" data-album-act="art" role="menuitem">
+              <b>Set cover…</b><span>Center-cropped and normalized</span>
+            </button>
+            <button class="menu-item" data-album-act="normalize" role="menuitem">
+              <b>Normalize quality</b><span>Re-encode tracks that miss the target</span>
+            </button>
+            <div class="menu-sep"></div>
+            <button class="menu-item danger" data-album-act="delete" role="menuitem">
+              <b>Delete record</b><span>Its tracks, audio and orphaned covers</span>
+            </button>
+          </div>
         </div>
       </div>
     </div>
-    <div class="order-row">
-      <label class="sort">Track order
-        <select id="album-sort">
-          ${Object.entries(lib.ALBUM_SORTS).map(([v, label]) =>
-    `<option value="${v}"${album.sortMode === v ? ' selected' : ''}>${escapeHtml(label)}</option>`).join('')}
-        </select>
-      </label>
-      <span class="muted small">Drag a row to place it — that switches the album to a custom order.</span>
+    <div class="tl-head">
+      <span></span><span>Title</span><span class="t3">Style</span>
+      <span>Quality</span><span class="lufs num">Loudness</span><span class="num">Time</span><span></span>
     </div>
-    <div class="track-list" id="album-tracks">${tracks.map((t) => trackRow(t, { draggable: true })).join('')}</div>`;
+    <div class="track-list" id="album-tracks">${tracks.map((t) =>
+    trackRow(t, { draggable: true, secondary: 'style' })).join('')}</div>`;
   hydrateArt(el);
+  bindPopover($('#btn-album-config'), $('#album-config'));
+  syncMeter();
 
   el.querySelectorAll('[data-album-act]').forEach((btn) => btn.addEventListener('click', (e) => {
     e.stopPropagation();
+    closeMenus();
     const act = btn.dataset.albumAct;
     if (act === 'play' && tracks.length) playTrack(tracks[0].id, tracks.map((t) => t.id));
+    if (act === 'shuffle' && tracks.length) {
+      const ids = tracks.map((t) => t.id);
+      playTrack(ids[Math.floor(Math.random() * ids.length)], ids, { shuffle: true });
+    }
     if (act === 'rename') openAlbumEditDialog(album);
     if (act === 'art') pickArtFor({ albumKey: key });
     if (act === 'normalize') normalizeTracks(tracks.filter((t) => lib.needsQualityNormalization(t, state.settings)));
@@ -942,7 +1127,7 @@ async function deleteTrackIds(ids, what) {
   const ctrl = progressStart(`Deleting ${picked.length} track${picked.length === 1 ? '' : 's'}`);
   try {
     // Stop first if we are about to delete what is playing.
-    if (player.track && ids.includes(player.track.id)) player.stop();
+    if (player.track && ids.includes(player.track.id)) stopPlayback();
     const res = await lib.deleteTracks(ids, {
       signal: ctrl.signal,
       onProgress: (done, total, label) => ctrl.set(done / total, `${done} / ${total} — ${label}`),
@@ -979,12 +1164,12 @@ async function deleteAlbumByKey(key) {
 
 /* ================================ playback ================================ */
 
-async function playTrack(id, queueIds) {
+async function playTrack(id, queueIds, { shuffle = false } = {}) {
   const track = state.tracks.find((t) => t.id === id);
   if (!track) return;
   state.queue = queueIds?.length ? [...queueIds] : [id];
   state.qi = Math.max(0, state.queue.indexOf(id));
-  if (state.settings.shuffle) shuffleQueue();
+  if (state.settings.shuffle || shuffle) shuffleQueue();
   await loadCurrent();
 }
 
@@ -1042,10 +1227,7 @@ function wirePlayer() {
     player.setVolume(+e.target.value);
     db.setSetting('volume', +e.target.value);
   });
-  $('#p-range').addEventListener('input', (e) => {
-    const d = player.duration;
-    if (d) player.seek((+e.target.value / 1000) * d);
-  });
+  bindWave();
   $('#p-shuffle').addEventListener('click', async () => {
     const on = !state.settings.shuffle;
     await db.setSetting('shuffle', on);
@@ -1056,19 +1238,19 @@ function wirePlayer() {
     const next = { off: 'all', all: 'one', one: 'off' }[state.settings.repeat];
     await db.setSetting('repeat', next);
     $('#p-repeat').classList.toggle('is-on', next !== 'off');
-    $('#p-repeat').textContent = next === 'one' ? '🔂' : '🔁';
+    $('#p-repeat').textContent = next === 'one' ? '↻1' : '↻';
   });
 
   player.on('track', () => { bar.hidden = false; });
-  player.on('play', () => { $('#p-play').textContent = '⏸'; });
-  player.on('pause', () => { $('#p-play').textContent = '▶'; });
+  player.on('play', () => { $('#p-play').textContent = 'Pause'; setSpin(true); syncMeter(); });
+  player.on('pause', () => { $('#p-play').textContent = 'Play'; setSpin(false); syncMeter(); });
   player.on('ended', () => playNext(1, true));
   player.on('error', () => toast('Playback error — the file may be corrupt', 'err'));
   player.on('timeupdate', () => {
     const d = player.duration, p = player.position;
     $('#p-cur').textContent = fmtTime(p);
     $('#p-dur').textContent = fmtTime(d);
-    if (d) $('#p-range').value = Math.round((p / d) * 1000);
+    paintWave(d ? p / d : 0);
     if ('mediaSession' in navigator && navigator.mediaSession.setPositionState && d) {
       try { navigator.mediaSession.setPositionState({ duration: d, position: Math.min(p, d) }); } catch { /* ignore */ }
     }
@@ -1083,23 +1265,154 @@ function wirePlayer() {
   }
 }
 
+/* ------------------------------- waveform -------------------------------- */
+
+/**
+ * The scrubber draws the track's measured momentary-loudness envelope (stored
+ * by the analysis pass). A track that has not been analyzed gets a flat strip
+ * rather than an invented shape — it still scrubs, it just claims nothing.
+ */
+const WAVE_BARS = 96;
+let waveBars = [];
+let waveFilled = -1;
+
+function renderWave(track) {
+  const box = $('#p-wave');
+  const env = track?.loudness?.envelope;
+  const n = env?.length || 0;
+  box.classList.toggle('flat', !n);
+  box.replaceChildren(...Array.from({ length: WAVE_BARS }, (_, i) => {
+    const bar = document.createElement('i');
+    const v = n ? env[Math.min(n - 1, Math.floor((i / WAVE_BARS) * n))] / 255 : 0.34;
+    bar.style.height = `${Math.max(6, v * 100)}%`;
+    return bar;
+  }));
+  waveBars = [...box.children];
+  waveFilled = -1;
+  paintWave(0);
+}
+
+function paintWave(frac) {
+  const n = Math.round(Math.max(0, Math.min(1, frac)) * WAVE_BARS);
+  if (n === waveFilled) return;
+  const [lo, hi] = waveFilled < 0 ? [0, WAVE_BARS] : [Math.min(n, waveFilled), Math.max(n, waveFilled)];
+  for (let i = lo; i < hi; i++) waveBars[i]?.classList.toggle('on', i < n);
+  waveFilled = n;
+  $('#p-wave').setAttribute('aria-valuenow', String(Math.round(frac * 100)));
+}
+
+function bindWave() {
+  const box = $('#p-wave');
+  const seekTo = (clientX) => {
+    const d = player.duration;
+    if (!d) return;
+    const r = box.getBoundingClientRect();
+    player.seek(Math.max(0, Math.min(1, (clientX - r.left) / r.width)) * d);
+  };
+  box.addEventListener('click', (e) => seekTo(e.clientX));
+  box.addEventListener('keydown', (e) => {
+    const step = e.shiftKey ? 30 : 5;
+    if (e.key === 'ArrowRight') { e.preventDefault(); player.seek(player.position + step); }
+    if (e.key === 'ArrowLeft') { e.preventDefault(); player.seek(Math.max(0, player.position - step)); }
+  });
+  renderWave(null);
+}
+
+/* ------------------------------ live meter ------------------------------- */
+
+/**
+ * The record hero carries a live output meter while something is playing. It
+ * reads real FFT magnitudes tapped off the playback graph *after* normalization
+ * gain, so it shows what you actually hear. Bars are log-spaced across the bins
+ * — linear spacing would bunch everything audible into the first two bars.
+ */
+const METER_BARS = 26;
+const METER_REST = 6;   // % height with no signal
+/** Bar i covers bins [EDGES[i], EDGES[i+1]) of the 128-bin FFT. */
+const METER_EDGES = Array.from({ length: METER_BARS + 1 }, (_, i) => Math.round(110 ** (i / METER_BARS)));
+
+let meterBars = [];
+let meterRaf = 0;
+let meterData = null;
+
+function meterOn() {
+  // offsetParent is null whenever the meter is display:none — which covers the
+  // record being closed, the narrow layout and reduced-motion in one test.
+  return !!state.settings.liveMeter && player.playing && !!$('#hero-meter')?.offsetParent;
+}
+
+/** Start or stop the meter to match what is on screen and what is playing. */
+function syncMeter() {
+  const box = $('#hero-meter');
+  if (!box) { stopMeter(); return; }
+  if (box.childElementCount !== METER_BARS) {
+    box.replaceChildren(...Array.from({ length: METER_BARS }, () => document.createElement('i')));
+  }
+  meterBars = [...box.children];
+  if (meterOn()) startMeter();
+  else stopMeter();
+}
+
+function startMeter() {
+  if (meterRaf) return;
+  const tick = () => {
+    meterRaf = requestAnimationFrame(tick);
+    const an = player.analyser();
+    if (!an) return;
+    if (meterData?.length !== an.frequencyBinCount) meterData = new Uint8Array(an.frequencyBinCount);
+    an.getByteFrequencyData(meterData);
+    const lit = Math.round((player.duration ? player.position / player.duration : 0) * METER_BARS);
+    for (let i = 0; i < METER_BARS; i++) {
+      const to = Math.max(METER_EDGES[i] + 1, METER_EDGES[i + 1]);
+      let peak = 0;
+      for (let b = METER_EDGES[i]; b < to && b < meterData.length; b++) if (meterData[b] > peak) peak = meterData[b];
+      meterBars[i].style.height = `${Math.max(METER_REST, (peak / 255) * 100)}%`;
+      meterBars[i].classList.toggle('on', i < lit);
+    }
+  };
+  meterRaf = requestAnimationFrame(tick);
+}
+
+function stopMeter() {
+  if (meterRaf) { cancelAnimationFrame(meterRaf); meterRaf = 0; }
+  for (const bar of meterBars) { bar.style.height = `${METER_REST}%`; bar.classList.remove('on'); }
+}
+
+const setSpin = (on) => $('#p-art-box').classList.toggle('spin', on && !!state.settings.spinDisc);
+
+/** Stop and pack the transport away — nothing is playing, so nothing should show. */
+function stopPlayback() {
+  player.stop();
+  $('#player').hidden = true;
+  setSpin(false);
+  stopMeter();
+  renderWave(null);
+}
+
 async function updatePlayerUI(track, gain) {
   $('#player').hidden = false;
   $('#p-title').textContent = track.title;
-  $('#p-sub').textContent = `${track.artist} — ${track.album}`;
+  $('#p-sub').textContent = `${track.artist} · ${track.album}`;
   $('#p-gain').textContent = `${fmtDb(gain.gainDb)} dB`;
   $('#p-gain').title = gain.basis === 'off'
     ? 'Normalization is off'
     : `${gain.basis} normalization · wanted ${fmtDb(gain.wanted)} dB${gain.limitedBy === 'peak' ? ' · reduced to stay under the true-peak ceiling' : ''}`;
-  const url = await artUrl(track.artId, 'full') || placeholderArt();
-  $('#p-art').src = url;
+
+  const box = $('#p-art-box');
+  box.style.setProperty('--cover', tintOf(track.albumKey).cover);
+  const img = $('#p-art');
+  const url = await artUrl(track.artId, 'full');
+  if (url) { img.src = url; img.classList.remove('is-empty'); }
+  else { img.removeAttribute('src'); img.classList.add('is-empty'); }
+  renderWave(track);
+  setSpin(player.playing);
 
   if ('mediaSession' in navigator) {
     navigator.mediaSession.metadata = new MediaMetadata({
       title: track.title,
       artist: track.artist,
       album: track.album,
-      artwork: url.startsWith('blob:') ? [{ src: url, sizes: `${state.settings.artSize}x${state.settings.artSize}` }] : [],
+      artwork: url ? [{ src: url, sizes: `${state.settings.artSize}x${state.settings.artSize}` }] : [],
     });
   }
 }
@@ -1117,7 +1430,10 @@ async function openTrackDialog(id) {
 
   dlg.innerHTML = `<div class="dlg-body">
     <div class="dlg-art">
-      ${art ? `<img src="${art}" alt="">` : '<div class="ph"></div>'}
+      <div class="tile" style="--cover:${tintOf(t.albumKey).cover}">
+        ${art ? `<img src="${art}" alt="">` : ''}
+        <div class="tile-cap"><b>${escapeHtml(t.album || '')}</b><span>${escapeHtml(t.codec || t.container || '')}</span></div>
+      </div>
       <div>
         <h3 style="margin:0 0 4px">${escapeHtml(t.title)}</h3>
         <div class="muted">${escapeHtml(t.artist)}</div>
@@ -1237,6 +1553,67 @@ function bindSettings() {
   bindCheck('#set-keep', 'keepOriginal');
   bindCheck('#set-upscale', 'reencodeBetter', renderQuality);
 
+  /* -- appearance: applied to :root immediately, persisted on release -- */
+  renderSwatches();
+  $('#set-accent').addEventListener('click', async (e) => {
+    const sw = e.target.closest('.swatch');
+    if (!sw?.dataset.hex) return;          // the custom swatch is handled below
+    await db.setSetting('accent', sw.dataset.hex);
+    applyTheme();
+    renderSwatches();
+  });
+  // Live-preview while dragging the picker; persist (and redraw the row, which
+  // would tear the open picker down) only once it is committed.
+  $('#set-accent').addEventListener('input', (e) => {
+    if (e.target.type !== 'color') return;
+    s().accent = e.target.value;
+    applyTheme();
+  });
+  $('#set-accent').addEventListener('change', async (e) => {
+    if (e.target.type !== 'color') return;
+    await db.setSetting('accent', e.target.value);
+    applyTheme();
+    renderSwatches();
+  });
+  const haze = $('#set-haze');
+  haze.addEventListener('input', () => {
+    s().haze = +haze.value;
+    $('#set-haze-val').textContent = `${Math.round(s().haze * 100)} %`;
+    applyTheme();
+  });
+  haze.addEventListener('change', () => db.setSetting('haze', +haze.value));
+  // The tint is baked into each tile's inline --cover, so the lists have to redraw.
+  bindCheck('#set-tint', 'tintedCovers', renderAll);
+  bindCheck('#set-spin', 'spinDisc', () => setSpin(player.playing));
+  bindCheck('#set-meter', 'liveMeter', () => syncMeter());
+
+  /* -- backdrop -- */
+  renderBackdrops();
+  $('#set-backdrop').addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-backdrop]');
+    if (!btn) return;
+    await db.setSetting('backdrop', btn.dataset.backdrop);
+    applyTheme();
+    renderBackdrops();
+    // Picking "Image" with nothing chosen yet would just look broken, so go
+    // straight to the picker.
+    if (btn.dataset.backdrop === 'image' && !state.settings.backdropImage) pickBackdrop();
+  });
+  $('#btn-backdrop-pick').addEventListener('click', pickBackdrop);
+  $('#btn-backdrop-clear').addEventListener('click', async () => {
+    await db.setSetting('backdropImage', null);
+    applyBackdropImage();
+    toast('Backdrop image removed');
+  });
+  const dim = $('#set-backdrop-dim');
+  dim.addEventListener('input', () => {
+    s().backdropDim = +dim.value;
+    $('#set-backdrop-dim-val').textContent = `${Math.round(s().backdropDim * 100)} %`;
+    applyTheme();
+  });
+  dim.addEventListener('change', () => db.setSetting('backdropDim', +dim.value));
+  bindCheck('#set-backdrop-mono', 'backdropMono', applyTheme);
+
   $('#btn-persist').addEventListener('click', async () => {
     if (!navigator.storage?.persist) { toast('Not supported in this browser', 'err'); return; }
     const ok = await navigator.storage.persist();
@@ -1247,9 +1624,13 @@ function bindSettings() {
   $('#btn-export').addEventListener('click', async () => {
     const tracks = (await lib.allTracks()).map(({ loudness, ...t }) => ({
       ...t,
-      loudness: loudness ? { ...loudness, hist: undefined } : null,
+      loudness: loudness ? { ...loudness, hist: undefined, envelope: undefined } : null,
     }));
-    const blob = new Blob([JSON.stringify({ exportedAt: new Date().toISOString(), settings: state.settings, tracks }, null, 2)], { type: 'application/json' });
+    // The backdrop picture is a Blob — it would serialize as {}, so it is named
+    // rather than dumped.
+    const { backdropImage, ...settings } = state.settings;
+    settings.backdropImage = backdropImage ? `<image, ${fmtBytes(backdropImage.size)}>` : null;
+    const blob = new Blob([JSON.stringify({ exportedAt: new Date().toISOString(), settings, tracks }, null, 2)], { type: 'application/json' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = 'offline-music-library.json';
@@ -1259,7 +1640,7 @@ function bindSettings() {
 
   $('#btn-wipe').addEventListener('click', async () => {
     if (!confirm('Delete every track, cover and setting stored by this app?')) return;
-    player.stop();
+    stopPlayback();
     await db.wipe();
     state.selected.clear();
     await reload();
@@ -1267,8 +1648,61 @@ function bindSettings() {
   });
 }
 
+function renderBackdrops() {
+  const cur = state.settings.backdrop || 'none';
+  $('#set-backdrop').innerHTML = db.BACKDROPS.map((b) =>
+    `<button type="button" role="radio" aria-checked="${b.key === cur}" data-backdrop="${b.key}"
+             class="${b.key === cur ? 'is-active' : ''}">${b.label}</button>`).join('');
+  // The image controls are noise unless the image backdrop is the one selected.
+  $('#backdrop-image-fields').classList.toggle('hidden', cur !== 'image');
+}
+
+/** Choose the window backdrop picture. Downscaled on the way in, then kept in
+ *  settings like any other preference — it never leaves the device. */
+function pickBackdrop() {
+  const input = $('#img-input');
+  input.value = '';
+  input.onchange = async () => {
+    const file = input.files[0];
+    if (!file) return;
+    const ctrl = progressStart('Preparing backdrop');
+    try {
+      await db.setSetting('backdropImage', await normalizeBackdrop(file));
+      // Choosing a picture is the intent to use it.
+      if (state.settings.backdrop !== 'image') await db.setSetting('backdrop', 'image');
+      applyTheme();
+      applyBackdropImage();
+      renderBackdrops();
+      toast('Backdrop saved');
+    } catch (err) {
+      toast(`Backdrop failed: ${err.message}`, 'err');
+    } finally { ctrl.done(); }
+  };
+  input.click();
+}
+
+function renderSwatches() {
+  const cur = String(state.settings.accent).toLowerCase();
+  const known = db.ACCENTS.some((a) => a.hex.toLowerCase() === cur);
+  $('#set-accent').innerHTML = db.ACCENTS.map((a) =>
+    `<button class="swatch${a.hex.toLowerCase() === cur ? ' is-active' : ''}" style="--hex:${a.hex}"
+             data-hex="${a.hex}" title="${a.label}" aria-label="Accent: ${a.label}"></button>`).join('')
+    + `<label class="swatch custom${known ? '' : ' is-active'}" style="--hex:${known ? '#e2542c' : cur}"
+              title="Custom colour">
+         <input type="color" id="set-accent-custom" value="${known ? '#e2542c' : cur}" aria-label="Custom accent colour">
+       </label>`;
+}
+
 function applySettingsToUI() {
   const s = state.settings;
+  $('#set-haze').value = s.haze;
+  $('#set-haze-val').textContent = `${Math.round(s.haze * 100)} %`;
+  $('#set-tint').checked = s.tintedCovers;
+  $('#set-spin').checked = s.spinDisc;
+  $('#set-meter').checked = s.liveMeter;
+  $('#set-backdrop-mono').checked = s.backdropMono;
+  $('#set-backdrop-dim').value = s.backdropDim;
+  $('#set-backdrop-dim-val').textContent = `${Math.round(s.backdropDim * 100)} %`;
   $('#set-mode').value = s.mode;
   $('#set-target').value = s.targetLufs;
   $('#set-ceiling').value = s.ceilingDbtp;
@@ -1290,7 +1724,7 @@ function applySettingsToUI() {
   $('#set-art-val').textContent = `${s.artSize} px`;
   $('#set-thumb-val').textContent = `${s.thumbSize} px`;
   $('#set-artq-val').textContent = `${Math.round(s.artQuality * 100)} %`;
-  $('#p-repeat').textContent = s.repeat === 'one' ? '🔂' : '🔁';
+  $('#p-repeat').textContent = s.repeat === 'one' ? '↻1' : '↻';
   if (!opusAvailable()) {
     $('#set-codec').querySelector('option[value=opus]').disabled = true;
   }

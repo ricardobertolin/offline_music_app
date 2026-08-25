@@ -1,15 +1,22 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- The Offpress mark: a stylus crossing a record, passing behind the label.
+       Same geometry as the .mark element in the header and as
+       scripts/gen-icons.mjs. -->
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#0d0f14"/>
-      <stop offset="1" stop-color="#18222c"/>
+      <stop offset="0" stop-color="#141417"/>
+      <stop offset="1" stop-color="#0a0a0b"/>
     </linearGradient>
-    <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#4aa8ff"/>
-      <stop offset="1" stop-color="#5ee1a0"/>
-    </linearGradient>
+    <clipPath id="disc"><circle cx="256" cy="256" r="194.6"/></clipPath>
   </defs>
   <rect width="512" height="512" rx="82" fill="url(#bg)"/>
-  <circle cx="256" cy="256" r="177" fill="none" stroke="url(#ring)" stroke-width="28"/>
-  <path fill="#5ee1a0" d="M290 146h68v34h-68v162a52 42 0 1 1-22-34V146z"/>
+  <circle cx="256" cy="256" r="180.5" fill="none" stroke="#ffffff" stroke-opacity=".55" stroke-width="28.1"/>
+  <circle cx="256" cy="256" r="107" fill="none" stroke="#ffffff" stroke-opacity=".34" stroke-width="23.8"/>
+  <g clip-path="url(#disc)">
+    <path d="M57.5 342.9 451.9 77.0" fill="none" stroke="#e2542c" stroke-width="34.6"/>
+  </g>
+  <!-- The label cuts the arm at the middle. Flat fill sampled from the gradient
+       at the centre, so the punch-out is invisible against the background. -->
+  <circle cx="256" cy="256" r="60.3" fill="#0f0f11"/>
+  <circle cx="256" cy="256" r="17.5" fill="#ffffff" fill-opacity=".34"/>
 </svg>
