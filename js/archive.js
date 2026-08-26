@@ -15,6 +15,7 @@
  *  The archive is an ordinary ZIP. Nothing stops you opening it in anything. */
 
 import * as db from './db.js';
+import * as source from './source.js';
 import { APP_VERSION } from './util.js';
 import { zipStream, saveStream } from './zipwrite.js';
 import { listEntries, extract } from './zip.js';
@@ -87,17 +88,29 @@ function extFor(name, mime) {
 /** ZIP paths are '/'-separated and must not escape the archive. */
 const safeName = (s) => String(s).replace(/[\\/]+/g, '_').replace(/^\.+/, '_');
 
+/** Filename-safe version of a record's title, for naming a shared bundle. */
+const slug = (s) => String(s || '').toLowerCase()
+  .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'bundle';
+
 /* --------------------------------- export --------------------------------- */
 
 /**
  * Build the archive's manifest and the list of files to write.
  * Blobs are *not* read here — each is fetched only as the writer reaches it.
+ *
+ * @param {Set<string>} [o.only] track ids. Present means this is a *bundle*
+ *        (one record, or a selection) rather than a backup of the whole library.
  */
-async function plan({ includeAudio = true, includeOriginals = true, settings }) {
-  const tracks = await db.getAll('tracks');
-  const albums = await db.getAll('albums');
-  const art = await db.getAll('art');
-  const folders = await db.getAll('folders');
+async function plan({ includeAudio = true, includeOriginals = true, settings, only = null, title = '' }) {
+  const every = await db.getAll('tracks');
+  const tracks = only ? every.filter((t) => only.has(t.id)) : every;
+  const keys = new Set(tracks.map((t) => t.albumKey));
+  const artIds = new Set(tracks.map((t) => t.artId).filter(Boolean));
+  const albums = (await db.getAll('albums')).filter((a) => !only || keys.has(a.key));
+  const art = (await db.getAll('art')).filter((a) => !only || artIds.has(a.id));
+  // A bundle is not a backup of the machine it came from, so folder links are
+  // meaningless in it.
+  const folders = only ? [] : await db.getAll('folders');
 
   const files = [];   // { name, load: () => Promise<Blob|null> }
   const manifestTracks = [];
@@ -105,12 +118,19 @@ async function plan({ includeAudio = true, includeOriginals = true, settings }) 
   for (const t of tracks) {
     const linked = t.source === 'folder';
     const rec = { ...t, loudness: packLoudness(t.loudness), audio: null, original: null };
-    // A linked track's audio belongs to the folder, not to this app — the
-    // manifest records where it was so a restore can re-link, and the bytes
-    // stay out of the archive.
-    if (includeAudio && !linked) {
+    // In a *backup*, a linked track's audio belongs to the folder rather than to
+    // this app: the manifest records where it was and the bytes stay out. In a
+    // *bundle* that reasoning inverts — whoever receives it cannot reach your
+    // folder, so the audio has to travel, and the record travels as an ordinary
+    // stored track rather than as a link into a machine they have never seen.
+    const carry = includeAudio && (!linked || !!only);
+    if (only) { rec.source = 'blob'; rec.folderId = null; rec.relPath = ''; rec.linked = null; }
+    if (carry) {
       rec.audio = `audio/${safeName(t.id)}${extFor(t.fileName, t.mime)}`;
-      files.push({ name: rec.audio, load: async () => (await db.get('blobs', t.id))?.blob || null });
+      files.push({
+        name: rec.audio,
+        load: () => (linked ? source.tryBlobFor(t) : db.get('blobs', t.id).then((r) => r?.blob || null)),
+      });
       if (includeOriginals && t.hasOriginal) {
         rec.original = `originals/${safeName(t.id)}${extFor(t.transcode?.from?.container, '')}`;
         files.push({ name: rec.original, load: async () => (await db.get('blobs', `${t.id}:orig`))?.blob || null });
@@ -136,12 +156,17 @@ async function plan({ includeAudio = true, includeOriginals = true, settings }) 
     return rec;
   });
 
-  // Settings are values plus one Blob; the picture goes in as a file.
-  const { backdropImage, ...rest } = settings || {};
-  const manifestSettings = { ...rest, backdropImage: null };
-  if (backdropImage instanceof Blob) {
-    manifestSettings.backdropImage = `backdrop${extFor('', backdropImage.type)}`;
-    files.push({ name: manifestSettings.backdropImage, load: async () => backdropImage });
+  // Settings are values plus one Blob; the picture goes in as a file. A bundle
+  // gets none of them: sending someone a record should not also send them your
+  // accent colour, and the backdrop is very often a personal photograph.
+  let manifestSettings = null;
+  if (!only) {
+    const { backdropImage, ...rest } = settings || {};
+    manifestSettings = { ...rest, backdropImage: null };
+    if (backdropImage instanceof Blob) {
+      manifestSettings.backdropImage = `backdrop${extFor('', backdropImage.type)}`;
+      files.push({ name: manifestSettings.backdropImage, load: async () => backdropImage });
+    }
   }
 
   const manifest = {
@@ -149,6 +174,8 @@ async function plan({ includeAudio = true, includeOriginals = true, settings }) 
     archiveVersion: ARCHIVE_VERSION,
     appVersion: APP_VERSION,
     exportedAt: new Date().toISOString(),
+    kind: only ? 'bundle' : 'library',
+    title: title || '',
     includesAudio: !!includeAudio,
     counts: {
       tracks: manifestTracks.length,
@@ -170,13 +197,16 @@ async function plan({ includeAudio = true, includeOriginals = true, settings }) 
 }
 
 /** How big the archive will be, so the UI can say so before it starts. */
-export async function estimate({ includeAudio = true, includeOriginals = true } = {}) {
-  const tracks = await db.getAll('tracks');
-  const art = await db.getAll('art');
+export async function estimate({ includeAudio = true, includeOriginals = true, only = null } = {}) {
+  const every = await db.getAll('tracks');
+  const tracks = only ? every.filter((t) => only.has(t.id)) : every;
+  const artIds = new Set(tracks.map((t) => t.artId).filter(Boolean));
+  const art = (await db.getAll('art')).filter((a) => !only || artIds.has(a.id));
   let bytes = 0;
   let audioFiles = 0;
   for (const t of tracks) {
-    if (!includeAudio || t.source === 'folder') continue;
+    // A bundle carries linked audio too — see plan().
+    if (!includeAudio || (t.source === 'folder' && !only)) continue;
     bytes += t.size || 0;
     audioFiles++;
     if (includeOriginals && t.hasOriginal) audioFiles++;
@@ -202,9 +232,9 @@ export async function estimate({ includeAudio = true, includeOriginals = true } 
  * @returns {Promise<{stream:ReadableStream, name:string, entries:number}>}
  */
 export async function exportStream({
-  includeAudio = true, includeOriginals = true, settings, onProgress, signal,
+  includeAudio = true, includeOriginals = true, settings, only = null, title = '', onProgress, signal,
 } = {}) {
-  const { manifest, files } = await plan({ includeAudio, includeOriginals, settings });
+  const { manifest, files } = await plan({ includeAudio, includeOriginals, settings, only, title });
   const total = files.length + 1;
 
   async function* entries() {
@@ -219,7 +249,9 @@ export async function exportStream({
 
   const stamp = new Date().toISOString().slice(0, 10);
   return {
-    name: `offpress-${includeAudio ? 'library' : 'metadata'}-${stamp}.zip`,
+    name: only
+      ? `offpress-${slug(title)}-${stamp}.zip`
+      : `offpress-${includeAudio ? 'library' : 'metadata'}-${stamp}.zip`,
     entries: total,
     stream: zipStream(entries(), {
       signal,
@@ -240,6 +272,23 @@ export async function exportLibrary(opts = {}) {
   return { entries, via, name };
 }
 
+/**
+ * A shareable bundle of specific tracks, as a File ready to hand to
+ * `navigator.share`. Unlike exportStream this materializes the whole thing,
+ * because a share sheet needs a File rather than a stream — so it is for a
+ * record or a selection, not for a whole library.
+ *
+ * @param {string[]} ids
+ * @param {string} title what to call it, e.g. the record's name
+ */
+export async function buildBundle(ids, { settings, title = '', onProgress, signal } = {}) {
+  const { stream, name } = await exportStream({
+    only: new Set(ids), settings, title, onProgress, signal,
+  });
+  const blob = await new Response(stream).blob();
+  return new File([blob], name, { type: 'application/zip' });
+}
+
 /* --------------------------------- restore -------------------------------- */
 
 /** Read just the manifest, so the UI can describe an archive before committing. */
@@ -252,9 +301,16 @@ export async function inspect(file) {
   if ((manifest.archiveVersion || 0) > ARCHIVE_VERSION) {
     throw new Error(`That backup was written by a newer version (archive v${manifest.archiveVersion})`);
   }
+  // Written before bundles existed: everything back then was a whole library.
+  if (!manifest.kind) manifest.kind = 'library';
   // Entries may sit under a folder if the archive was repacked by hand.
   const prefix = found.name.slice(0, found.name.length - MANIFEST.length);
   return { manifest, entries, prefix };
+}
+
+/** Is this file one of ours? Cheap enough to ask of anything dropped on the app. */
+export async function isArchive(file) {
+  try { await inspect(file); return true; } catch { return false; }
 }
 
 /**

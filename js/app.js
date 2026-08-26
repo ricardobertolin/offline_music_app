@@ -8,6 +8,7 @@ import { Player } from './audio/player.js';
 import { artUrl, normalizeBackdrop } from './image.js';
 import { opusAvailable } from './audio/oggopus.js';
 import { isZip, expand } from './zip.js';
+import { saveStream } from './zipwrite.js';
 import { computeReport, renderReport } from './report.js';
 import {
   $, $$, APP_VERSION, fmtTime, fmtBytes, fmtDb, escapeHtml, toast, debounce, sortBy,
@@ -289,6 +290,7 @@ function bindUI() {
   $('#btn-sel-all').addEventListener('click', () => selectAllVisible(true));
   $('#btn-sel-none').addEventListener('click', () => selectAllVisible(false));
   $('#btn-sel-artist').addEventListener('click', openBulkArtistDialog);
+  $('#btn-sel-send').addEventListener('click', sendPicked);
   $('#btn-sel-delete').addEventListener('click', deletePicked);
 
   $('#track-list').addEventListener('click', onTrackListClick);
@@ -453,7 +455,18 @@ async function importFiles(files) {
   const archives = [];
   for (const f of files) if (await isZip(f)) archives.push(f);
 
-  let audio = files.filter((f) => !archives.includes(f)).filter(lib.isAudioFile);
+  // One of our own backups is a zip too, and unpacking it as an album would
+  // import `audio/<uuid>.wav` as untagged tracks and throw away every
+  // measurement in its manifest. Ask first, and restore it instead.
+  const backups = [];
+  for (const f of archives.slice()) {
+    if (!await archive.isArchive(f)) continue;
+    backups.push(f);
+    archives.splice(archives.indexOf(f), 1);
+  }
+  for (const f of backups) await openRestoreDialog(f);
+
+  let audio = files.filter((f) => !archives.includes(f) && !backups.includes(f)).filter(lib.isAudioFile);
   let unpackFailures = [];
 
   if (archives.length) {
@@ -476,6 +489,8 @@ async function importFiles(files) {
   }
 
   if (!audio.length) {
+    // A backup was the whole point of the drop, and it has already been handled.
+    if (backups.length) return;
     toast(unpackFailures.length ? `Could not read: ${unpackFailures[0]}` : 'No audio files in that selection', 'err');
     if (unpackFailures.length) console.warn('Archive problems', unpackFailures);
     return;
@@ -754,6 +769,16 @@ function updateSelectionBar() {
   $('#sel-count').textContent = n ? `${n} selected · ${fmtBytes(bytes)}` : 'Nothing selected';
   $('#btn-sel-delete').disabled = !n;
   $('#btn-sel-artist').disabled = !n;
+  $('#btn-sel-send').disabled = !n;
+}
+
+/** Send the current selection. Named after the record when it is all one. */
+function sendPicked() {
+  const ids = [...state.picked];
+  if (!ids.length) { toast('Select some tracks first'); return; }
+  const picked = state.tracks.filter((t) => ids.includes(t.id));
+  const albums = new Set(picked.map((t) => t.album));
+  sendTracks(ids, albums.size === 1 ? [...albums][0] : `${ids.length} tracks`);
 }
 
 function selectAllVisible(on) {
@@ -955,6 +980,9 @@ function renderAlbumDetail(key) {
             <button class="menu-item" data-album-act="normalize" role="menuitem">
               <b>Normalize quality</b><span>Re-encode tracks that miss the target</span>
             </button>
+            <button class="menu-item" data-album-act="send" role="menuitem">
+              <b>Send this record…</b><span>A .zip carrying the audio and every measurement</span>
+            </button>
             <div class="menu-sep"></div>
             <button class="menu-item danger" data-album-act="delete" role="menuitem">
               <b>Delete record</b><span>Its tracks, audio and orphaned covers</span>
@@ -985,6 +1013,7 @@ function renderAlbumDetail(key) {
     if (act === 'rename') openAlbumEditDialog(album);
     if (act === 'art') pickArtFor({ albumKey: key });
     if (act === 'normalize') normalizeTracks(tracks.filter((t) => lib.needsQualityNormalization(t, state.settings)));
+    if (act === 'send') sendTracks(tracks.map((t) => t.id), album.name);
     if (act === 'delete') deleteAlbumByKey(key);
   }));
 
@@ -1069,10 +1098,21 @@ function formDialog({ title, hint, fields, saveLabel = 'Save', onSave }) {
     return [f.key, f.type === 'checkbox' ? el.checked : el.value];
   }));
 
+  // Resolves once the form is finished with — after onSave has run, or straight
+  // away if it was cancelled. Callers that queue dialogs (importing two backups
+  // at once) need to know when one is really done, and the dialog's own close
+  // event fires long before the work behind it has.
+  let saving = false;
+  let settle;
+  const closed = new Promise((r) => { settle = r; });
+  dlg.addEventListener('close', () => { if (!saving) settle(); }, { once: true });
+
   const save = async () => {
+    saving = true;               // set before close(), which the listener races
     const values = read();
     dlg.close();
     try { await onSave(values); } catch (err) { toast(err.message, 'err'); }
+    settle();
   };
 
   dlg.onclick = (e) => {
@@ -1088,7 +1128,7 @@ function formDialog({ title, hint, fields, saveLabel = 'Save', onSave }) {
   dlg.showModal();
   const first = dlg.querySelector('input.text');
   first?.select();
-  return dlg;
+  return { dlg, closed };
 }
 
 function openAlbumEditDialog(album) {
@@ -1902,6 +1942,7 @@ async function openTrackDialog(id) {
       <button class="btn" data-act="analyze">Re-analyze</button>
       <button class="btn" data-act="normalize">Normalize quality</button>
       ${lib.canRestore(t) ? '<button class="btn" data-act="restore">Restore original</button>' : ''}
+      <button class="btn" data-act="send">Send…</button>
       <button class="btn" data-act="download">Export file</button>
       <button class="btn danger" data-act="delete">Delete</button>
       <div class="grow"></div>
@@ -1925,6 +1966,7 @@ async function openTrackDialog(id) {
       return;
     }
     if (act === 'normalize') { dlg.close(); normalizeTracks([t]); return; }
+    if (act === 'send') { dlg.close(); sendTracks([t.id], t.title); return; }
     if (act === 'restore') {
       dlg.close();
       const ctrl = progressStart('Restoring original');
@@ -2152,7 +2194,107 @@ async function runBackup() {
   } finally { ctrl.done(); }
 }
 
-/** Read the manifest, describe what is in the file, then ask how to bring it in. */
+/* ================================= sending ================================ */
+
+/** Can this browser put a *file* into the OS share sheet? Chrome and Edge can
+ *  on Android and Windows, Safari can on iOS. Firefox and Linux cannot, and
+ *  there the bundle is simply saved and sent by whatever you already use. */
+const canShareFiles = (file) => {
+  try { return !!navigator.canShare?.({ files: [file] }) && !!navigator.share; }
+  catch { return false; }
+};
+
+/**
+ * Pack tracks into a bundle and offer it to whatever can carry it.
+ *
+ * The build and the send are deliberately two steps. `navigator.share` has to
+ * be called from a user gesture, and packing a few hundred megabytes takes far
+ * longer than a gesture survives — so the file is made first, behind the
+ * progress bar, and the dialog's own button is the gesture that sends it.
+ */
+async function sendTracks(ids, label) {
+  if (!ids.length) { toast('Nothing to send'); return; }
+  // Linked audio is read out of its folder and packed in, so the only tracks
+  // that cannot travel whole are the ones this device cannot read at all.
+  const hollow = state.tracks.filter((t) => ids.includes(t.id) && (t.needsAudio || t.needsRelink)).length;
+  if (hollow) {
+    toast(`${hollow} track${hollow === 1 ? '' : 's'} have no audio on this device and will go as measurements only`);
+  }
+
+  const ctrl = progressStart(`Packing ${label}`);
+  let file;
+  try {
+    file = await archive.buildBundle(ids, {
+      settings: state.settings,
+      title: label,
+      signal: ctrl.signal,
+      onProgress: (p, sub) => ctrl.set(p, sub),
+    });
+  } catch (err) {
+    if (err?.name !== 'AbortError') toast(`Could not pack that: ${err.message}`, 'err');
+    return;
+  } finally { ctrl.done(); }
+
+  openSendDialog(file, label, ids.length);
+}
+
+/** What to do with the packed bundle. Both buttons act inside their own click. */
+function openSendDialog(file, label, count) {
+  const dlg = $('#dlg');
+  const shareable = canShareFiles(file);
+
+  dlg.innerHTML = `<div class="dlg-body">
+    <h3>Send ${escapeHtml(label)}</h3>
+    <p class="muted small">${count} track${count === 1 ? '' : 's'} · ${fmtBytes(file.size)} ·
+    ${escapeHtml(file.name)}</p>
+    <p class="hint">The bundle carries the audio, the covers and every loudness and quality
+    measurement. Whoever opens it in Offpress gets the record fully analyzed, and anything
+    they already have is skipped. It is an ordinary .zip, so it travels by any means you
+    like.</p>
+    ${shareable ? '' : `<p class="hint">This browser cannot hand a file to the system share
+    sheet, so save it and send it however you normally would.</p>`}
+    <div class="actions">
+      ${shareable ? '<button class="btn primary" data-act="share">Share…</button>' : ''}
+      <button class="btn${shareable ? '' : ' primary'}" data-act="save">Save as a file…</button>
+      <div class="grow"></div>
+      <button class="btn" data-act="close">Cancel</button>
+    </div>
+  </div>`;
+
+  dlg.onclick = async (e) => {
+    const act = e.target.dataset?.act;
+    if (!act) return;
+    if (act === 'close') { dlg.close(); return; }
+    if (act === 'share') {
+      // Inside the click, with the file already in hand — no await before this.
+      try {
+        await navigator.share({ files: [file], title: label });
+        dlg.close();
+      } catch (err) {
+        if (err?.name !== 'AbortError') toast(`Share failed: ${err.message}`, 'err');
+      }
+      return;
+    }
+    if (act === 'save') {
+      dlg.close();
+      try {
+        const via = await saveStream(file.stream(), file.name, {
+          types: [{ description: 'Offpress bundle', accept: { 'application/zip': ['.zip'] } }],
+        });
+        toast(via === 'file' ? 'Bundle written' : `Bundle downloaded as ${file.name}`);
+      } catch (err) {
+        if (err?.name !== 'AbortError') toast(`Could not save it: ${err.message}`, 'err');
+      }
+    }
+  };
+  dlg.showModal();
+}
+
+/**
+ * Read the manifest, describe what is in the file, then ask how to bring it in.
+ * Resolves once the restore has actually finished, so two archives dropped
+ * together are handled one after the other rather than at the same time.
+ */
 async function openRestoreDialog(file) {
   let manifest;
   try {
@@ -2162,26 +2304,37 @@ async function openRestoreDialog(file) {
     return;
   }
   const c = manifest.counts || {};
+  const bundle = manifest.kind === 'bundle';
   const when = manifest.exportedAt ? new Date(manifest.exportedAt).toLocaleString() : 'an unknown date';
+  const what = bundle && manifest.title ? manifest.title : file.name;
 
-  formDialog({
-    title: 'Restore from backup',
-    hint: `${escapeHtml(file.name)} — ${c.tracks || 0} tracks, ${c.albums || 0} records, `
-      + `${c.art || 0} covers, written by v${escapeHtml(manifest.appVersion || '?')} on ${escapeHtml(when)}. `
-      + (manifest.includesAudio
-        ? 'This backup carries the audio.'
-        : 'This is a measurements-only backup — tracks come back without their audio and reattach when you re-import the files.'),
-    saveLabel: 'Restore',
-    fields: [
-      {
-        key: 'replace',
-        label: `Replace what is here (${state.tracks.length} track${state.tracks.length === 1 ? '' : 's'}) instead of merging into it`,
-        type: 'checkbox',
-        value: false,
-      },
-      { key: 'restoreSettings', label: 'Also restore the settings from the backup', type: 'checkbox', value: false },
-    ],
-    async onSave({ replace, restoreSettings }) {
+  const describe = `${escapeHtml(what)} — ${c.tracks || 0} track${c.tracks === 1 ? '' : 's'}, `
+    + `${c.albums || 0} record${c.albums === 1 ? '' : 's'}, ${c.art || 0} cover${c.art === 1 ? '' : 's'}, `
+    + `written by v${escapeHtml(manifest.appVersion || '?')} on ${escapeHtml(when)}. `
+    + (manifest.includesAudio
+      ? 'It carries the audio, and every loudness and quality measurement with it.'
+      : 'This is a measurements-only archive — tracks come in without their audio and reattach when you import the files.');
+
+  // Replacing your library with somebody else's record would be a catastrophe,
+  // so a shared bundle can only ever merge. A backup of your own can do either.
+  const fields = bundle ? [] : [
+    {
+      key: 'replace',
+      label: `Replace what is here (${state.tracks.length} track${state.tracks.length === 1 ? '' : 's'}) instead of merging into it`,
+      type: 'checkbox',
+      value: false,
+    },
+    { key: 'restoreSettings', label: 'Also restore the settings from the backup', type: 'checkbox', value: false },
+  ];
+
+  const { closed } = formDialog({
+    title: bundle ? 'Add shared record' : 'Restore from backup',
+    hint: bundle
+      ? `${describe} Anything you already have is skipped by content hash.`
+      : describe,
+    saveLabel: bundle ? 'Add to library' : 'Restore',
+    fields,
+    async onSave({ replace = false, restoreSettings = false }) {
       if (replace && !confirm('Delete the current library first?\n\nEverything in it is removed before the backup is read. This cannot be undone.')) return;
       const ctrl = progressStart('Restoring');
       try {
@@ -2202,7 +2355,7 @@ async function openRestoreDialog(file) {
         }
         await lib.refreshAllAlbums();
         await reload();
-        const bits = [`${res.added} restored`];
+        const bits = [`${res.added} ${bundle ? 'added' : 'restored'}`];
         if (res.skipped) bits.push(`${res.skipped} already here`);
         if (res.missingAudio) bits.push(`${res.missingAudio} awaiting audio`);
         if (res.relink) bits.push(`${res.relink} awaiting a folder link`);
@@ -2214,6 +2367,7 @@ async function openRestoreDialog(file) {
       } finally { ctrl.done(); }
     },
   });
+  await closed;
 }
 
 function renderBackdrops() {

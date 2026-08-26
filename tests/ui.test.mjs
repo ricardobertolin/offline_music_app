@@ -1134,6 +1134,226 @@ try {
   eq('the measurements were never re-derived', reattached.keptLoudness, before.lufs);
 
   /* ================================================================
+     13b. sending a record: a scoped bundle, and the share-sheet path.
+     ================================================================ */
+
+  await page.goto(URL);
+  await bootWait();
+  await page.evaluate(MAKE_FILES);
+
+  // Two records, so a bundle of one has something to leave behind.
+  await page.evaluate(async () => {
+    const lib = await import('./js/library.js');
+    const dbm = await import('./js/db.js');
+    await dbm.wipe();
+    const settings = await dbm.settings();
+    await lib.importFiles(await window.__mk('Sent Record', ['01 a.wav', '02 b.wav']), { settings });
+    await lib.importFiles(await window.__mk('Kept Record', ['01 c.wav']), { settings });
+    await dbm.setSetting('accent', '#e2542c');
+  });
+
+  const bundle = await page.evaluate(async () => {
+    const arc = await import('./js/archive.js');
+    const dbm = await import('./js/db.js');
+    const settings = await dbm.settings();
+    const all = await dbm.getAll('tracks');
+    const mine = all.filter((t) => t.album === 'Sent Record');
+
+    const file = await arc.buildBundle(mine.map((t) => t.id), { settings, title: 'Sent Record' });
+    window.__bundle = file;
+    const { manifest } = await arc.inspect(file);
+    return {
+      name: file.name,
+      type: file.type,
+      bytes: file.size,
+      kind: manifest.kind,
+      title: manifest.title,
+      tracks: manifest.tracks.map((t) => t.title).sort(),
+      albums: manifest.albums.map((a) => a.name),
+      settings: manifest.settings,
+      folders: manifest.folders,
+      isArchive: await arc.isArchive(file),
+      // A plain album zip must not be mistaken for one of ours.
+      plainZipIsArchive: await arc.isArchive(new File([new Uint8Array([80, 75, 5, 6, ...new Array(18).fill(0)])], 'x.zip')),
+    };
+  });
+  eq('a bundle is marked as one', bundle.kind, 'bundle');
+  eq('and carries what to call it', bundle.title, 'Sent Record');
+  ok('named after the record, not the library', /^offpress-sent-record-\d{4}-\d{2}-\d{2}\.zip$/.test(bundle.name), bundle.name);
+  eq('it is a zip the share sheet will accept', bundle.type, 'application/zip');
+  // Untagged WAVs take their title from the filename, so these are the two from
+  // Sent Record and nothing from Kept Record.
+  eq('it holds only the tracks asked for', bundle.tracks, ['01 a', '02 b']);
+  eq('and only that record', bundle.albums, ['Sent Record']);
+  // Sending someone a record should not also send them your accent colour, and
+  // the backdrop setting can hold a personal photograph.
+  eq('no settings travel with a bundle', bundle.settings, null);
+  eq('and no folder links either', bundle.folders, []);
+  ok('the app recognises its own archive', bundle.isArchive);
+  ok('but not an unrelated zip', !bundle.plainZipIsArchive);
+  ok('it carries real audio, not just a manifest', bundle.bytes > 100000, `${bundle.bytes} B`);
+
+  /* Receiving it: a fresh library gets the record fully analyzed. */
+  const received = await page.evaluate(async () => {
+    const arc = await import('./js/archive.js');
+    const dbm = await import('./js/db.js');
+    const lib = await import('./js/library.js');
+    await dbm.wipe();
+    const res = await arc.restoreLibrary(window.__bundle, { mode: 'merge' });
+    await lib.refreshAllAlbums();
+    const tracks = await dbm.getAll('tracks');
+    const t = tracks[0];
+    return {
+      res,
+      tracks: tracks.length,
+      albums: (await dbm.getAll('albums')).map((a) => a.name),
+      analyzed: tracks.every((x) => x.analyzed),
+      lufs: t.loudness?.integratedLufs,
+      score: t.quality?.score,
+      playable: !!(await dbm.get('blobs', t.id)),
+      accent: (await dbm.settings()).accent,
+    };
+  });
+  eq('both tracks arrive', received.res.added, 2);
+  eq('under their own record', received.albums, ['Sent Record']);
+  ok('already analyzed, with no decode pass needed', received.analyzed);
+  ok('loudness came with them', typeof received.lufs === 'number', String(received.lufs));
+  ok('and the quality score', typeof received.score === 'number', String(received.score));
+  ok('the audio plays', received.playable);
+  // wipe() leaves settings alone, so this proves the bundle did not carry one.
+  eq('the receiver keeps their own accent', received.accent, '#e2542c');
+
+  /* Receiving it twice adds nothing. */
+  const twice = await page.evaluate(async () => {
+    const arc = await import('./js/archive.js');
+    const dbm = await import('./js/db.js');
+    const res = await arc.restoreLibrary(window.__bundle, { mode: 'merge' });
+    return { res, tracks: (await dbm.getAll('tracks')).length };
+  });
+  eq('a record you already have is skipped', twice.res.skipped, 2);
+  eq('nothing is added twice', twice.res.added, 0);
+  eq('and the library does not grow', twice.tracks, 2);
+
+  /* The share-target route: importFiles must restore it, not unpack it as an
+     album. Before this, `audio/<uuid>.wav` was imported as untagged tracks. */
+  await page.goto(URL);
+  await bootWait();
+  await page.evaluate(MAKE_FILES);
+  const viaImport = await page.evaluate(async () => {
+    const arc = await import('./js/archive.js');
+    const dbm = await import('./js/db.js');
+    const lib = await import('./js/library.js');
+    await dbm.wipe();
+    const settings = await dbm.settings();
+    await lib.importFiles(await window.__mk('Sent Record', ['01 a.wav', '02 b.wav']), { settings });
+    const mine = await dbm.getAll('tracks');
+    const file = await arc.buildBundle(mine.map((t) => t.id), { settings, title: 'Sent Record' });
+    await dbm.wipe();
+    location.hash = '';
+    window.__incoming = file;
+    return { built: file.name };
+  });
+  void viaImport;
+
+  // Drive the real drop path, then answer the dialog the way a person would.
+  const dropped = await page.evaluate(async () => {
+    const dt = new DataTransfer();
+    dt.items.add(window.__incoming);
+    document.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }));
+    // Wait for the manifest to be read and the dialog to appear.
+    for (let i = 0; i < 80 && !document.querySelector('#dlg')?.open; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    const dlg = document.querySelector('#dlg');
+    return {
+      open: !!dlg?.open,
+      heading: dlg?.querySelector('h3')?.textContent || '',
+      saveLabel: dlg?.querySelector('[data-act="save"]')?.textContent || '',
+      // A shared record must never offer to wipe the library it is landing in.
+      offersReplace: !!dlg?.querySelector('#f-replace'),
+      offersSettings: !!dlg?.querySelector('#f-restoreSettings'),
+    };
+  });
+  ok('dropping a bundle opens the restore dialog', dropped.open);
+  eq('worded as a record arriving, not a backup', dropped.heading, 'Add shared record');
+  eq('and the button says so', dropped.saveLabel, 'Add to library');
+  ok('a shared record cannot replace your library', !dropped.offersReplace);
+  ok('nor bring its sender settings', !dropped.offersSettings);
+
+  const accepted = await page.evaluate(async () => {
+    const dbm = await import('./js/db.js');
+    document.querySelector('#dlg [data-act="save"]').click();
+    for (let i = 0; i < 100; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      if ((await dbm.getAll('tracks')).length === 2) break;
+    }
+    const tracks = await dbm.getAll('tracks');
+    return {
+      tracks: tracks.length,
+      albums: [...new Set(tracks.map((t) => t.album))],
+      analyzed: tracks.every((t) => t.analyzed),
+      titles: tracks.map((t) => t.title).sort(),
+    };
+  });
+  eq('accepting it brings the tracks in', accepted.tracks, 2);
+  // The old behaviour: expand() would have imported audio/<uuid>.wav and named
+  // the album after the folder inside the zip.
+  eq('under the sender\'s record name, not the zip layout', accepted.albums, ['Sent Record']);
+  ok('the zip was never unpacked as an album', !accepted.albums.includes('audio'), accepted.albums.join(','));
+  ok('and the measurements came with it', accepted.analyzed);
+
+  /* The Send action exists where you would look for it. */
+  await page.goto(URL);
+  await bootWait();
+  const sendUi = await page.evaluate(async () => {
+    document.querySelector('.tab[data-view="tracks"]').click();
+    document.querySelector('#btn-select').click();
+    await new Promise((r) => setTimeout(r, 120));
+    const send = document.querySelector('#btn-sel-send');
+    const disabledWithNothing = send.disabled;
+    document.querySelector('#btn-sel-all').click();
+    await new Promise((r) => setTimeout(r, 120));
+    const enabledWithSelection = !send.disabled;
+    document.querySelector('#btn-sel-exit').click();
+
+    document.querySelector('.tab[data-view="albums"]').click();
+    await new Promise((r) => setTimeout(r, 150));
+    document.querySelector('#album-grid .album')?.click();
+    await new Promise((r) => setTimeout(r, 200));
+    return {
+      disabledWithNothing,
+      enabledWithSelection,
+      inAlbumMenu: !!document.querySelector('[data-album-act="send"]'),
+    };
+  });
+  ok('Send is disabled until something is selected', sendUi.disabledWithNothing);
+  ok('and enabled once it is', sendUi.enabledWithSelection);
+  ok('a record offers Send in its Configure menu', sendUi.inAlbumMenu);
+
+  // One more button in the selection bar is one more chance to push the page
+  // sideways on a phone.
+  await page.send('Emulation.setDeviceMetricsOverride', { width: 360, height: 640, deviceScaleFactor: 3, mobile: true });
+  const selBar = await page.evaluate(async () => {
+    document.querySelector('.tab[data-view="tracks"]').click();
+    await new Promise((r) => setTimeout(r, 150));
+    const btn = document.querySelector('#btn-select');
+    if (btn.getAttribute('aria-pressed') !== 'true') btn.click();
+    await new Promise((r) => setTimeout(r, 200));
+    const bar = document.querySelector('#selection-bar');
+    return {
+      visible: !bar.classList.contains('hidden'),
+      barOverflow: bar.scrollWidth - bar.clientWidth,
+      docOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      right: Math.round(bar.getBoundingClientRect().right),
+    };
+  });
+  ok('the selection bar is open for the check', selBar.visible);
+  eq('it does not scroll sideways on a phone', selBar.barOverflow, 0);
+  eq('nor does the page', selBar.docOverflow, 0);
+  ok('and it stays inside the screen', selBar.right <= 360, String(selBar.right));
+  await page.send('Emulation.clearDeviceMetricsOverride', {});
+
+  /* ================================================================
      14. the report — arithmetic over what is already stored.
      ================================================================ */
 

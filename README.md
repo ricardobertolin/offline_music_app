@@ -192,6 +192,31 @@ into place all survive, because recomputing those is the expensive part.
 restore it, re-import the same files, and each one reattaches to the row that already holds
 its analysis instead of being imported fresh.
 
+The same archive format is what gets sent to another person, scoped to one record — see
+below. Any Offpress archive dropped on the app, opened with it or shared into it is
+recognised by its manifest and restored, rather than being unpacked as if it were an album
+of loose files.
+
+### Sending a record to someone
+
+**Configure → Send this record**, **Send…** in the track selection, or **Send…** in a
+track's details packs the chosen tracks into a bundle: the audio, the covers and every
+loudness and quality measurement, in an ordinary `.zip`. Where the browser supports it the
+bundle goes straight into the OS share sheet (`navigator.share`), so on Android or Windows
+it is one tap to AirDrop, Nearby Share, a messenger or a mail draft. Everywhere else it is
+saved as a file and you send it however you already do.
+
+Whoever opens it in Offpress gets the record already analyzed, because the measurements
+travel with it and nothing has to be decoded again. Anything they already own is skipped by
+content hash, so sending someone a record they half have transfers the half they are
+missing. Dropping the bundle on the app, opening it with the app, or sharing it into the app
+all land in the same place.
+
+A bundle is not a backup of the machine it came from. It carries no settings, no backdrop
+picture and no folder links, and a linked track's audio is read out of its folder and packed
+in — the person receiving it cannot reach your disk. A shared record can only ever merge
+into a library, never replace one.
+
 ### Linked folders
 
 Importing copies files into IndexedDB, which means a second copy of your music on disk.
@@ -285,6 +310,9 @@ analysis and playback; Opus re-encoding needs WebCodecs, and where it is missing
 says so in Settings and falls back to WAV. Linking folders needs the File System Access
 API, so that option only appears on desktop Chromium; backup and restore work everywhere,
 though without the API the archive is downloaded rather than streamed to a chosen file.
+Handing a bundle to the OS share sheet needs `navigator.share` with file support — Android
+Chrome, iOS Safari, and Chrome and Edge on Windows have it, Firefox and Linux do not, and
+there the bundle is saved instead.
 
 ## Layout
 
