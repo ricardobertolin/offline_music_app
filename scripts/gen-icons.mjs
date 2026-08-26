@@ -11,7 +11,7 @@ mkdirSync(OUT, { recursive: true });
 
 const BG = [0x0a, 0x0a, 0x0b];    // --ink-0
 const BG2 = [0x14, 0x14, 0x17];
-const ACCENT = [0xe2, 0x54, 0x2c]; // Rust, the default accent
+const ACCENT = [0xff, 0xff, 0xff]; // Blank, the default accent
 const WHITE = [0xff, 0xff, 0xff];
 
 const mix = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
@@ -49,11 +49,11 @@ function shade(x, y, inset) {
   paint(ring(u, v, 0.5, 0.5, 0.4639, 0.0722), WHITE, 0.55);  // record edge
   paint(ring(u, v, 0.5, 0.5, 0.275, 0.0611), WHITE, 0.34);   // label ring
   // The tonearm crosses the whole record, clipped to its edge — the CSS mark
-  // gets that clip from overflow:hidden. It runs at the mark's -34°, offset so
-  // it passes 0.10 from the centre: near enough that a small label can break it
-  // even at 16px, which the design's wider offset cannot.
+  // gets that clip from overflow:hidden. It runs at the mark's -34° and through
+  // the centre, so the label below breaks it exactly at its middle. Off-centre
+  // the punch-out lands short of the middle and the arm reads as crooked.
   paint(Math.max(
-    segment(u, v, -0.0100, 0.7232, 1.0033, 0.0400, 0.0444),
+    segment(u, v, 0.0440, 0.8076, 0.9560, 0.1924, 0.0444),
     circle(u, v, 0.5, 0.5, 0.5),
   ), ACCENT);
   // The label punches the arm out at the middle, so the line reads as an arm

@@ -361,9 +361,9 @@
 <!-- TRANSPORT -->
 <footer class="transport" id="player" hidden>
   <div class="t-now">
-    <div class="t-art" id="p-art-box"><img id="p-art" class="is-empty" alt=""><i class="disc"></i></div>
+    <div class="t-art" id="p-art-box"><img id="p-art" class="is-empty" alt=""><i class="disc"></i><i class="spindle"></i></div>
     <div class="t-meta">
-      <div class="t-title" id="p-title"></div>
+      <div class="t-title marquee" id="p-title"></div>
       <div class="t-sub" id="p-sub"></div>
     </div>
     <!-- Phone only: without it nothing says this bar opens anything. -->
@@ -403,17 +403,23 @@
     <button class="now-icon" id="now-more" aria-label="Track details" title="Track details">⋮</button>
   </header>
 
-  <div class="tile now-art" id="now-art-box">
-    <img id="now-art" class="is-empty" alt="">
-    <i class="disc"></i>
-    <div class="tile-cap">
-      <b id="now-cap-title"></b>
-      <span id="now-cap-sub"></span>
+  <!-- The wrapper is the only thing on the screen that gives: the artwork is a
+       square that fits whatever height is left, so the foot never falls below
+       the fold on a short phone. -->
+  <div class="now-artwrap">
+    <div class="tile now-art" id="now-art-box">
+      <img id="now-art" class="is-empty" alt="">
+      <i class="disc"></i>
+      <i class="spindle"></i>
+      <div class="tile-cap">
+        <b id="now-cap-title"></b>
+        <span id="now-cap-sub"></span>
+      </div>
     </div>
   </div>
 
   <div class="now-title">
-    <div class="now-track" id="now-track"></div>
+    <div class="now-track marquee" id="now-track"></div>
     <div class="now-artist" id="now-artist"></div>
   </div>
 

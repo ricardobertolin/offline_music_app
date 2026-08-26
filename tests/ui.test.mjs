@@ -553,6 +553,93 @@ try {
   ok('the chevron closes it', phone.closed);
   ok('without stopping playback', phone.stillLoaded);
 
+  /* ---------- 11c-2. the Now-playing screen fits one phone screen ----------
+     The queue counter and the gain badge sat below the fold: you had to scroll
+     the screen to find out what was playing out of what. The artwork is the one
+     elastic row now, so it gives way instead. 360x640 is the small end of what
+     ships. */
+  const fits = [];
+  for (const [w, h] of [[390, 844], [360, 640], [412, 732]]) {
+    await page.send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: true });
+    fits.push(await page.evaluate(async () => {
+      const el = document.querySelector('#now');
+      document.querySelector('.t-now').click();
+      await new Promise((r) => setTimeout(r, 300));
+      const foot = document.querySelector('.now-foot').getBoundingClientRect();
+      const art = document.querySelector('.now-art').getBoundingClientRect();
+      const out = {
+        scrolls: el.scrollHeight > el.clientHeight + 1,
+        footBelowFold: Math.round(foot.bottom) > el.clientHeight,
+        artSquare: Math.abs(art.width - art.height) <= 1,
+        artVisible: art.width > 80,
+        artFits: Math.round(art.width) <= el.clientWidth,
+      };
+      document.querySelector('#now-close').click();
+      await new Promise((r) => setTimeout(r, 150));
+      return out;
+    }));
+  }
+  for (const [i, [w, h]] of [[390, 844], [360, 640], [412, 732]].entries()) {
+    ok(`the now screen does not scroll at ${w}x${h}`, !fits[i].scrolls);
+    ok(`the queue and gain readout is above the fold at ${w}x${h}`, !fits[i].footBelowFold);
+    ok(`the artwork stays square at ${w}x${h}`, fits[i].artSquare);
+    ok(`and still fills the width it has at ${w}x${h}`, fits[i].artVisible && fits[i].artFits);
+  }
+
+  /* ---------- 11c-3. long titles move rather than being cut ---------- */
+  await page.send('Emulation.setDeviceMetricsOverride', { width: 360, height: 640, deviceScaleFactor: 1, mobile: true });
+  const mq = await page.evaluate(async () => {
+    const el = document.querySelector('#now-track');
+    document.querySelector('.t-now').click();
+    await new Promise((r) => setTimeout(r, 300));
+    const wired = el.firstElementChild?.tagName === 'SPAN';
+    const short = el.classList.contains('is-scrolling');
+    // Re-measuring is what decides it, so give it something that cannot fit and
+    // let the resize hook run.
+    el.firstElementChild.textContent =
+      'A Title Far Too Long For Any Phone To Show In One Go, By Some Considerable Margin';
+    window.dispatchEvent(new Event('resize'));
+    await new Promise((r) => setTimeout(r, 500));
+    const cs = getComputedStyle(el);
+    const out = {
+      wired,
+      shortStaysStill: !short,
+      longScrolls: el.classList.contains('is-scrolling'),
+      shift: parseFloat(cs.getPropertyValue('--mq-shift')),
+      dur: parseFloat(cs.getPropertyValue('--mq-dur')),
+      clipped: el.clientWidth < el.firstElementChild.scrollWidth,
+    };
+    document.querySelector('#now-close').click();
+    await new Promise((r) => setTimeout(r, 150));
+    return out;
+  });
+  ok('the title is wrapped in a span the marquee can move', mq.wired);
+  ok('a title that fits is left alone', mq.shortStaysStill);
+  ok('one that does not fit scrolls', mq.longScrolls);
+  ok('it travels exactly the hidden overflow', mq.clipped && mq.shift > 0, `${mq.shift}px`);
+  ok('over a duration set by the distance', mq.dur >= 4, `${mq.dur}s`);
+
+  /* ---------- 11c-4. the quality badge shrinks to an abbreviation ---------- */
+  const abbr = await page.evaluate(async () => {
+    document.querySelector('.tab[data-view="tracks"]').click();
+    await new Promise((r) => setTimeout(r, 250));
+    const b = document.querySelector('#track-list .badge');
+    if (!b) return { none: true };
+    return {
+      word: b.textContent.trim(),
+      abbr: b.dataset.abbr?.trim(),
+      wordHidden: getComputedStyle(b).fontSize === '0px',
+      shown: getComputedStyle(b, '::before').content.replace(/^"|"$/g, '').trim(),
+      width: Math.round(b.getBoundingClientRect().width),
+    };
+  });
+  await page.send('Emulation.clearDeviceMetricsOverride');
+  ok('the track row carries an abbreviation for phones', !!abbr.abbr, abbr.abbr);
+  ok('the full wording is hidden at phone width', abbr.wordHidden);
+  ok('and the abbreviation is what is drawn', abbr.shown === abbr.abbr, `${abbr.shown} vs ${abbr.abbr}`);
+  ok('the badge fits its column', abbr.width <= 62, `${abbr.width}px`);
+  await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+
   /* ---------- 11d. the phone transport: target size and no page pan ----------
      .t-now on its own came out 120px wide beside the controls, and the seek
      block it was competing with pushed the bar 12px past the right edge — so

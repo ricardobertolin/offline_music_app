@@ -19,7 +19,7 @@
   --fg-3:rgba(255,255,255,.34);
   --fg-4:rgba(255,255,255,.26);
 
-  --accent:#e2542c;
+  --accent:#ffffff;
   --accent-ink:#0a0a0b;
   --accent-hi:color-mix(in srgb, var(--accent) 82%, #fff);
   --accent-line:color-mix(in srgb, var(--accent) 60%, transparent);
@@ -72,6 +72,35 @@ button,input,select,textarea{font:inherit;color:inherit;letter-spacing:inherit}
 .small{font-size:13px}
 h1,h2,h3{margin:0}
 @keyframes drift{to{transform:rotate(360deg)}}
+
+/* Marquee — a title too long for its box slides across and back rather than
+   being cut off. Only the overflow can decide whether it should move, and CSS
+   cannot measure that, so setMarquee() in app.js sets .is-scrolling and the two
+   custom properties; without them this is a plain ellipsis. The holds at each
+   end are what make it readable instead of a ticker. */
+.marquee{overflow:hidden}
+.marquee > span{
+  display:block;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;
+}
+.marquee.is-scrolling{
+  /* Both edges feather while it moves, so a word never gets guillotined at the
+     boundary — an ellipsis says "there is more", a hard cut just looks broken. */
+  -webkit-mask-image:linear-gradient(90deg, transparent 0, #000 12px, #000 calc(100% - 16px), transparent 100%);
+          mask-image:linear-gradient(90deg, transparent 0, #000 12px, #000 calc(100% - 16px), transparent 100%);
+}
+.marquee.is-scrolling > span{
+  overflow:visible;text-overflow:clip;
+  will-change:transform;
+  animation:marquee var(--mq-dur,10s) ease-in-out infinite alternate;
+}
+@keyframes marquee{
+  0%,16%{transform:translateX(0)}
+  84%,100%{transform:translateX(calc(-1 * var(--mq-shift,0px)))}
+}
+@media (prefers-reduced-motion:reduce){
+  .marquee.is-scrolling > span{animation:none;overflow:hidden;text-overflow:ellipsis}
+}
 
 /* Mono microtype — the label voice used throughout the design. */
 .eyebrow,.rail-label,.menu-label,.tl-head,.badge,.press,.t-time,.gain-badge,
@@ -364,7 +393,8 @@ button.tile:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
   letter-spacing:.2em;text-transform:uppercase;color:rgba(255,255,255,.55);
 }
 
-/* The spinning press, masked to a ring. Used on the transport's mini cover. */
+/* The spinning press, masked to a ring. Used on the transport's mini cover and
+   on the Now-playing artwork — the only two .disc in the document. */
 .disc{
   position:absolute;inset:-16%;border-radius:50%;pointer-events:none;
   background:repeating-radial-gradient(circle at center,
@@ -372,9 +402,47 @@ button.tile:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
   filter:blur(.4px);
   -webkit-mask-image:radial-gradient(circle at center, transparent 24%, #000 30%, #000 74%, transparent 92%);
           mask-image:radial-gradient(circle at center, transparent 24%, #000 30%, #000 74%, transparent 92%);
+  animation:drift 16s linear infinite;
+  animation-play-state:paused;
 }
-.spin .disc{animation:drift 16s linear infinite}
-@media (prefers-reduced-motion:reduce){ .disc{animation:none !important} }
+/* Paused rather than removed, so pausing the music freezes the record where it
+   stands instead of snapping it back to twelve o'clock. */
+.spin .disc{animation-play-state:running}
+
+/* With a real cover the grooves alone were the whole effect, and over artwork
+   they are all but invisible — the disc looked static. So the cover *becomes*
+   the record: cut to a circle, inset off the sleeve's square, turning in step
+   with the grooves on top of it. The tint the sleeve was already carrying shows
+   through at the corners. */
+/* Sized rather than inset: `width:auto` on a replaced element resolves to the
+   image's own 512px, not to the box the insets describe, so an inset alone
+   leaves a 512px square hanging out of a 42px transport tile. */
+.press:has(img:not(.is-empty)) img{
+  inset:6% auto auto 6%;width:88%;height:88%;
+  border-radius:50%;
+  animation:drift 16s linear infinite;
+  animation-play-state:paused;
+  box-shadow:0 0 0 1px rgba(0,0,0,.5), 0 6px 22px rgba(0,0,0,.45);
+}
+.press.spin:has(img:not(.is-empty)) img{animation-play-state:running}
+/* Grooves have to bite harder over artwork than over flat ink, or the record
+   reads as a plain round crop. */
+.press:has(img:not(.is-empty)) .disc{
+  inset:6%;
+  background:repeating-radial-gradient(circle at center,
+    rgba(0,0,0,.26) 0 1px, rgba(255,255,255,.07) 1px 2px, rgba(255,255,255,0) 2px 6px);
+}
+/* The spindle: a small punch at the centre, so the round crop reads as a record
+   and not as an avatar. Its own element rather than a pseudo — .tile::before and
+   ::after are both spoken for, and .disc's mask would eat a child at the middle. */
+.spindle{display:none}
+.press:has(img:not(.is-empty)) .spindle{
+  display:block;position:absolute;left:50%;top:50%;z-index:2;
+  width:7%;height:7%;margin:-3.5% 0 0 -3.5%;border-radius:50%;
+  background:var(--ink-0);box-shadow:0 0 0 1px rgba(255,255,255,.16);
+  pointer-events:none;
+}
+@media (prefers-reduced-motion:reduce){ .disc,.press img{animation:none !important} }
 
 /* ============================== records ============================== */
 
@@ -688,7 +756,7 @@ button.tile:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
 .now{
   position:fixed;inset:0;z-index:70;
   display:flex;flex-direction:column;
-  padding:calc(14px + env(safe-area-inset-top)) 24px calc(26px + env(safe-area-inset-bottom));
+  padding:calc(12px + env(safe-area-inset-top)) 24px calc(18px + env(safe-area-inset-bottom));
   background:var(--ink-0);overflow-y:auto;overscroll-behavior:contain;
 }
 .now[hidden]{display:none}
@@ -704,7 +772,7 @@ button.tile:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
   background-image:radial-gradient(rgba(255,255,255,.5) .5px, transparent .6px);
   background-size:3px 3px;opacity:var(--haze);
 }
-.now-head,.now-art,.now-title,.now-seek,.now-controls,.now-foot{position:relative;z-index:1;flex:0 0 auto}
+.now-head,.now-artwrap,.now-title,.now-seek,.now-controls,.now-foot{position:relative;z-index:1;flex:0 0 auto}
 
 .now-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
 .now{outline:none}
@@ -728,42 +796,74 @@ button.tile:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
   color:rgba(255,255,255,.9);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
 }
 
-.now-art{margin-top:24px}
+/* The one elastic row. Everything else on the screen is a fixed height, so the
+   artwork absorbs whatever is left and the whole screen fits without scrolling.
+   The square is sized from both of the wrapper's axes at once — aspect-ratio
+   with a max on the other axis does not stay square, because the clamp applies
+   to one side and the ratio never gets to pull the other back. That is what
+   container-type:size buys here. */
+.now-artwrap{
+  flex:1 1 0;min-height:0;margin-top:18px;
+  display:flex;align-items:center;justify-content:center;
+  container-type:size;
+}
+.now-art{width:min(100cqw,100cqh);height:min(100cqw,100cqh);flex:0 0 auto}
 /* The press turns behind the cover rather than beside it, as on the design's
    phone screen — the transport that carried the small one is covered up. */
 .now-art .disc{opacity:.42;mix-blend-mode:screen}
+/* Over artwork the grooves are cut with black as well as white, and screen
+   blending throws the black half away — so this pair goes back to normal. */
+.now-art.press:has(img:not(.is-empty)) .disc{opacity:.72;mix-blend-mode:normal}
 .now-art .tile-cap{left:18px;right:18px;bottom:20px}
 .now-art .tile-cap b{font-size:26px;line-height:.98;letter-spacing:.03em}
 
-.now-title{margin-top:24px}
+.now-title{margin-top:18px}
 .now-track{
-  font-weight:600;font-size:28px;letter-spacing:.03em;text-transform:uppercase;
-  line-height:1.02;color:var(--fg-hi);text-wrap:balance;
+  font-weight:600;font-size:26px;letter-spacing:.03em;text-transform:uppercase;
+  line-height:1.1;color:var(--fg-hi);
 }
-.now-artist{margin-top:6px;font-size:16px;letter-spacing:.12em;text-transform:uppercase;color:var(--fg-2)}
+.now-artist{
+  margin-top:5px;font-size:15px;letter-spacing:.12em;text-transform:uppercase;color:var(--fg-2);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
 
-.now-seek{margin-top:22px}
-.now-seek .wave{max-width:none;height:44px}
+.now-seek{margin-top:16px}
+.now-seek .wave{max-width:none;height:38px}
 .now-times{
-  display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-top:9px;
+  display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-top:8px;
   font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--fg-3);
   font-variant-numeric:tabular-nums;
 }
 #now-cur{color:rgba(255,255,255,.82)}
 #now-format{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
-.now-controls{margin-top:24px;display:flex;align-items:center;justify-content:space-between;gap:6px}
+.now-controls{margin-top:16px;display:flex;align-items:center;justify-content:space-between;gap:6px}
 .now-controls .icon{font-size:15px;padding:8px}
 .now-play{
   appearance:none;border:0;background:var(--accent);color:var(--accent-ink);
-  width:66px;height:66px;flex:0 0 66px;cursor:pointer;
+  width:62px;height:62px;flex:0 0 62px;cursor:pointer;
   font-family:var(--mono);font-size:17px;
 }
 .now-play:hover{background:var(--accent-hi)}
 
 .now-foot{
-  margin-top:auto;padding-top:24px;display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding-top:14px;display:flex;align-items:center;justify-content:space-between;gap:12px;
+  min-height:22px;
   font-family:var(--mono);font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:var(--fg-3);
+}
+
+/* Short phones — and every phone in landscape — have no room for the artwork at
+   all once the controls are in. It shrinks to nothing rather than pushing the
+   foot off the bottom. */
+@media (max-height:600px){
+  .now{padding-top:calc(8px + env(safe-area-inset-top))}
+  .now-artwrap{margin-top:10px}
+  .now-track{font-size:21px}
+  .now-artist{font-size:13px}
+  .now-title,.now-seek,.now-controls{margin-top:10px}
+  .now-seek .wave{height:30px}
+  .now-play{width:52px;height:52px;flex:0 0 52px;font-size:15px}
+  .now-foot{padding-top:10px}
 }
 
 /* ============================== overlays ============================== */
@@ -853,10 +953,15 @@ button.tile:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
   .rail-foot .kv{display:none}
   .rail-settings{margin:0;padding:11px 14px}
 
-  .tl-head,.track{grid-template-columns:40px minmax(0,2fr) 96px 52px 28px;gap:12px}
+  .tl-head,.track{grid-template-columns:40px minmax(0,2fr) 62px 48px 26px;gap:10px}
   .track .t3,.track .lufs,.tl-head .t3,.tl-head .lufs{display:none}
-  .track-list.compact .tl-head,.track-list.compact .track{grid-template-columns:40px minmax(0,2fr) 96px 28px}
+  .track-list.compact .tl-head,.track-list.compact .track{grid-template-columns:40px minmax(0,2fr) 62px 26px}
   .track-list.compact .t3,.track-list.compact .num.kbps{display:none}
+  /* "standard 88" is wider than the whole column here, and the word is the part
+     the title can least afford. The tier keeps its colour, which carries most of
+     the reading anyway; the full wording stays in the track dialog. */
+  .badge[data-abbr]{font-size:0;letter-spacing:0;padding:2px 4px}
+  .badge[data-abbr]::before{content:attr(data-abbr);font-size:8.5px;letter-spacing:.1em}
 
   /* The whole bar opens the Now-playing screen, and the chevron says so.
      .t-now on its own came out 120px wide next to the controls — a target you

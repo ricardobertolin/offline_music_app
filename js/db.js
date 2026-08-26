@@ -100,7 +100,7 @@ export const DEFAULTS = {
   volume: 1,
   shuffle: false,
   repeat: 'off',            // off | all | one
-  accent: '#e2542c',        // appearance — see ACCENTS
+  accent: '#ffffff',        // appearance — see ACCENTS
   haze: 0.08,               // grain opacity over covers and record heroes
   tintedCovers: true,       // colour records that have no cover art
   spinDisc: true,           // rotate the press on the transport while playing
@@ -113,6 +113,7 @@ export const DEFAULTS = {
 
 /** The press-shop palette. Anything else the user picks still round-trips. */
 export const ACCENTS = [
+  { label: 'Blank', hex: '#ffffff' },
   { label: 'Rust', hex: '#e2542c' },
   { label: 'Acid', hex: '#c8ea3a' },
   { label: 'Sodium', hex: '#f0a52b' },

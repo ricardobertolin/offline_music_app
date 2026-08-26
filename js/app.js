@@ -55,7 +55,7 @@ function applyTheme() {
   // whole switch is one attribute rather than a pile of inline styles.
   el.dataset.backdrop = s.backdrop || 'none';
   el.dataset.backdropMono = s.backdropMono ? 'on' : 'off';
-  $('#p-art-box')?.classList.toggle('spin', !!s.spinDisc && player.playing);
+  setSpin(player.playing);
 }
 
 /** The object URL for the stored backdrop, revoked whenever it is replaced. */
@@ -538,6 +538,12 @@ function visibleTracks() {
   return sortBy(list, key);
 }
 
+/** Phone widths swap the tier word for these — see .badge[data-abbr] in the CSS.
+ *  The column is 96px on a phone and "standard" alone does not fit in it. */
+const TIER_ABBR = {
+  lossless: 'LSL', high: 'HI', standard: 'STD', low: 'LOW', poor: 'POOR', pending: '—',
+};
+
 /**
  * @param {object} o
  * @param {'album'|'style'} [o.secondary] third column: the album, or the genre —
@@ -548,11 +554,13 @@ function trackRow(t, { compact = false, checkbox = false, draggable = false, pic
   const g = lib.gainFor(t, state.settings, albumOf(t));
   const q = t.quality;
   const lufs = t.loudness?.integratedLufs;
+  const tier = q?.tier || 'pending';
   const badge = !t.analyzed
     ? (t.analyzeError
-      ? `<span class="badge poor" title="${escapeHtml(t.analyzeError)}">not analyzed</span>`
-      : '<span class="badge pending">analyzing…</span>')
-    : `<span class="badge ${q?.tier || 'pending'}" title="${escapeHtml((q?.flags || []).join(' · ') || 'No issues found')}">${q?.tier || '—'} ${q?.score ?? ''}</span>`;
+      ? `<span class="badge poor" data-abbr="ERR" title="${escapeHtml(t.analyzeError)}">not analyzed</span>`
+      : '<span class="badge pending" data-abbr="···">analyzing…</span>')
+    : `<span class="badge ${tier}" data-abbr="${TIER_ABBR[tier] || '—'} ${q?.score ?? ''}"
+             title="${escapeHtml((q?.flags || []).join(' · ') || 'No issues found')}">${q?.tier || '—'} ${q?.score ?? ''}</span>`;
 
   const cols = compact
     ? `<div class="t3">${escapeHtml(t.codec || t.container || '')}${t.sampleRate ? ` · ${(t.sampleRate / 1000).toFixed(1)} kHz` : ''}</div>
@@ -1346,7 +1354,10 @@ function wirePlayer() {
   $('#now-close').addEventListener('click', () => openNow(false));
   $('#now-more').addEventListener('click', () => player.track && openTrackDialog(player.track.id));
   // Growing past the fold leaves the phone screen stranded over a desktop layout.
-  window.addEventListener('resize', debounce(() => { if (!isPhone()) openNow(false); }, 200));
+  window.addEventListener('resize', debounce(() => {
+    if (!isPhone()) openNow(false);
+    measureMarquees();
+  }, 200));
 
   player.on('track', () => { bar.hidden = false; });
   player.on('play', () => { setPlayLabel(true); setSpin(true); syncMeter(); });
@@ -1499,10 +1510,16 @@ function stopMeter() {
   for (const bar of meterBars) { bar.style.height = `${METER_REST}%`; bar.classList.remove('on'); }
 }
 
+/** `press` is the shape — with a cover in place the artwork is cut to a record
+ *  face, which is what makes the rotation visible at all. `spin` only runs the
+ *  animation, so pausing freezes the record where it stands instead of snapping
+ *  the cover back to a square. */
 const setSpin = (on) => {
-  const spin = on && !!state.settings.spinDisc;
-  $('#p-art-box').classList.toggle('spin', spin);
-  $('#now-art-box').classList.toggle('spin', spin);
+  const press = !!state.settings.spinDisc;
+  for (const box of [$('#p-art-box'), $('#now-art-box')]) {
+    box?.classList.toggle('press', press);
+    box?.classList.toggle('spin', press && !!on);
+  }
 };
 
 /** The transport spells it out; the phone screen's 66px square uses glyphs. */
@@ -1510,6 +1527,46 @@ function setPlayLabel(playing) {
   $('#p-play').textContent = playing ? 'Pause' : 'Play';
   $('#now-play').textContent = playing ? '▮▮' : '▶';
 }
+
+/* -------------------------------- marquee --------------------------------- */
+
+/* Whether a title fits its box is a measured fact, and CSS cannot measure it —
+   so the class and the travel distance are set from here and the stylesheet
+   only draws. Live marquees are kept so a rotation or a fold re-measures them. */
+const marquees = new Set();
+
+/** Put `text` in `el` (a .marquee) and slide it if it does not fit. */
+function setMarquee(el, text) {
+  if (!el) return;
+  let span = el.firstElementChild;
+  if (!span || span.tagName !== 'SPAN') {
+    el.textContent = '';
+    span = el.appendChild(document.createElement('span'));
+  }
+  span.textContent = text ?? '';
+  el.title = text ?? '';
+  marquees.add(el);
+  measureMarquee(el);
+}
+
+function measureMarquee(el) {
+  const span = el.firstElementChild;
+  if (!span) return;
+  // The animation's transform is part of what scrollWidth reports, so it has to
+  // come off before the box is measured.
+  el.classList.remove('is-scrolling');
+  const box = el.clientWidth;
+  if (!box) return; // hidden — openNow() and the resize hook measure it later
+  const shift = span.scrollWidth - box;
+  if (shift <= 2) return;
+  el.style.setProperty('--mq-shift', `${shift}px`);
+  // A steady ~34 px/s across the moving 68% of the cycle — the rest is the hold
+  // at each end. Long titles take longer rather than travelling faster.
+  el.style.setProperty('--mq-dur', `${Math.max(4, shift / 34 / 0.68).toFixed(1)}s`);
+  el.classList.add('is-scrolling');
+}
+
+const measureMarquees = () => { for (const el of marquees) measureMarquee(el); };
 
 /* --------------------------- now playing (phone) -------------------------- */
 
@@ -1523,7 +1580,7 @@ function openNow(show) {
   el.hidden = !on;
   // Focus the screen itself, not its close button: a control would take a
   // visible ring the moment it is focused from script.
-  if (on) el.focus({ preventScroll: true });
+  if (on) { el.focus({ preventScroll: true }); measureMarquees(); }
 }
 
 /** Everything on the screen that depends on which track is loaded. */
@@ -1534,7 +1591,7 @@ async function renderNow(track, gain) {
   $('#now-art-box').style.setProperty('--cover', tint.cover);
 
   $('#now-record').textContent = track.album;
-  $('#now-track').textContent = track.title;
+  setMarquee($('#now-track'), track.title);
   $('#now-artist').textContent = track.artist;
   $('#now-cap-title').textContent = track.album;
   const total = state.tracks.filter((t) => t.albumKey === track.albumKey).length;
@@ -1568,7 +1625,7 @@ function stopPlayback() {
 
 async function updatePlayerUI(track, gain) {
   $('#player').hidden = false;
-  $('#p-title').textContent = track.title;
+  setMarquee($('#p-title'), track.title);
   $('#p-sub').textContent = `${track.artist} · ${track.album}`;
   $('#p-gain').textContent = `${fmtDb(gain.gainDb)} dB`;
   $('#p-gain').title = gain.basis === 'off'
@@ -1865,9 +1922,9 @@ function renderSwatches() {
   $('#set-accent').innerHTML = db.ACCENTS.map((a) =>
     `<button class="swatch${a.hex.toLowerCase() === cur ? ' is-active' : ''}" style="--hex:${a.hex}"
              data-hex="${a.hex}" title="${a.label}" aria-label="Accent: ${a.label}"></button>`).join('')
-    + `<label class="swatch custom${known ? '' : ' is-active'}" style="--hex:${known ? '#e2542c' : cur}"
+    + `<label class="swatch custom${known ? '' : ' is-active'}" style="--hex:${known ? db.DEFAULTS.accent : cur}"
               title="Custom colour">
-         <input type="color" id="set-accent-custom" value="${known ? '#e2542c' : cur}" aria-label="Custom accent colour">
+         <input type="color" id="set-accent-custom" value="${known ? db.DEFAULTS.accent : cur}" aria-label="Custom accent colour">
        </label>`;
 }
 

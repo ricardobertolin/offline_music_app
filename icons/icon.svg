@@ -12,8 +12,10 @@
   <rect width="512" height="512" rx="82" fill="url(#bg)"/>
   <circle cx="256" cy="256" r="180.5" fill="none" stroke="#ffffff" stroke-opacity=".55" stroke-width="28.1"/>
   <circle cx="256" cy="256" r="107" fill="none" stroke="#ffffff" stroke-opacity=".34" stroke-width="23.8"/>
+  <!-- A true diameter at -34°, so the label below punches it exactly at its
+       middle and the two halves come out the same length. -->
   <g clip-path="url(#disc)">
-    <path d="M57.5 342.9 451.9 77.0" fill="none" stroke="#e2542c" stroke-width="34.6"/>
+    <path d="M40.4 401.4 471.6 110.6" fill="none" stroke="#ffffff" stroke-width="34.6"/>
   </g>
   <!-- The label cuts the arm at the middle. Flat fill sampled from the gradient
        at the centre, so the punch-out is invisible against the background. -->

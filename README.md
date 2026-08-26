@@ -62,33 +62,50 @@ corners, one accent colour — the **Offpress** design.
   scrolling strip under the header, and the header's search drops to its own line.
 - The **transport** carries the mini cover (with the press turning while it plays), the
   transport buttons, the applied normalization gain, and the loudness-envelope scrubber.
+- The **press turns the cover itself**. Where a record has artwork, the artwork is cut to
+  the record's face and rotates under the grooves, with the spindle punched at the middle;
+  a record with no cover turns its grooves over the tinted sleeve as before. Pausing
+  freezes it where it stands rather than snapping it back upright, and the whole effect is
+  the **Turning press** switch in Settings → Appearance.
 - On a phone, tapping **anywhere on the transport bar** — the whole strip, not just the
   cover — opens the **Now-playing screen**, and a chevron on the mini player says so.
-  It carries the record's cover full width with the press turning behind it, the track,
-  the wide scrubber over the same measured envelope, a 66 px transport, and the file's
-  real format, queue position and applied gain along the bottom. `⌄` or Escape goes
-  back; playback is untouched either way. It only exists under 860 px — above that the
-  transport and the record hero already carry all of it. At that width the bar itself
-  drops to cover, title, prev/play/next; the scrubber, shuffle and repeat live on the
-  Now-playing screen, which is where there is room for them.
-- The page itself never scrolls. Only the stage, the folded rail and the Now-playing
-  screen do, so nothing can be dragged around the way a zoomed page can.
+  It carries the turning record, the track, the wide scrubber over the same measured
+  envelope, the transport, and the file's real format, queue position and applied gain
+  along the bottom. The artwork is the only elastic row on the screen: everything else is
+  a fixed height and the square takes what is left, so the whole thing fits one screen
+  down to 360×640 without scrolling. `⌄` or Escape goes back; playback is untouched
+  either way. It only exists under 860 px — above that the transport and the record hero
+  already carry all of it. At that width the bar itself drops to cover, title,
+  prev/play/next; the scrubber, shuffle and repeat live on the Now-playing screen, which
+  is where there is room for them.
+- A **track title too long for its box slides across and back** rather than being cut off,
+  on the Now-playing screen and on the mini player. Whether it moves at all is measured,
+  not guessed: a title that fits is left perfectly still. Also on a phone, the quality
+  badge drops to an abbreviation (`LSL`, `HI`, `STD`, `LOW`, `POOR`) and its column
+  narrows, which is where the title gets most of its room back. The full wording stays in
+  the track dialog.
+- The page itself never scrolls. Only the stage and the folded rail do, so nothing can be
+  dragged around the way a zoomed page can.
 - A record's hero carries a **live output meter** while something is playing. It reads
   real FFT magnitudes off the playback graph *after* normalization gain, so it moves with
   what you actually hear rather than to a timer. Desktop only, and off under
   `prefers-reduced-motion`.
-- **Settings → Appearance** picks the accent from the six press-shop colours or any colour
+- **Settings → Appearance** picks the accent from the seven press-shop colours or any colour
   you like, sets how much grain sits over covers, and toggles the record tinting, the
-  turning press and the live meter. The ink on the accent is chosen from its luminance, so
-  the near-white "Bleach" stays readable without a second setting to get wrong.
+  turning press and the live meter. The default is **Blank**, plain white; the ink on the
+  accent is chosen from its luminance, so a near-white accent stays readable without a
+  second setting to get wrong.
 - **Settings → Backdrop** puts a wallpaper behind the whole window. *Grooves*, *Halftone*
   and *Sleeve* are drawn in CSS from the accent colour and cost nothing. *Image* uses a
   picture you choose: it is downscaled to 1920 px on the longest edge, stored in IndexedDB
   like everything else, and never uploaded. It is desaturated and darkened by default, and
   a **Dim** slider sets how much ink sits between the picture and the interface. Whenever a
   backdrop is on, the chrome, rail, panels and transport go translucent so it reads through.
-- The **mark** — a stylus resting on a record — is the same geometry in the header, in
+- The **mark** — a stylus crossing a record — is the same geometry in the header, in
   `icons/icon.svg` and in the generated PNG icons, so the installed app looks like the app.
+  The arm is a true diameter through the centre, and the label punches it out at exactly
+  its middle so it reads as an arm passing behind the record rather than as a struck-out
+  circle. Run `npm run icons` after touching `scripts/gen-icons.mjs`.
 - Fonts come from Google Fonts and are cached by the service worker on first load; before
   that, and if they never load at all, the app falls back to a local condensed/mono stack.
 
