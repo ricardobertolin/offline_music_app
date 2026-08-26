@@ -55,6 +55,8 @@ function applyTheme() {
   // whole switch is one attribute rather than a pile of inline styles.
   el.dataset.backdrop = s.backdrop || 'none';
   el.dataset.backdropMono = s.backdropMono ? 'on' : 'off';
+  // Phones default to the title alone; the columns are one attribute away.
+  el.dataset.cols = s.phoneColumns ? 'all' : 'name';
   setSpin(player.playing);
 }
 
@@ -564,12 +566,12 @@ function trackRow(t, { compact = false, checkbox = false, draggable = false, pic
 
   const cols = compact
     ? `<div class="t3">${escapeHtml(t.codec || t.container || '')}${t.sampleRate ? ` · ${(t.sampleRate / 1000).toFixed(1)} kHz` : ''}</div>
-       <div>${badge}</div>
+       <div class="qual">${badge}</div>
        <div class="num kbps">${q?.bitrateKbps ? `${q.bitrateKbps} kbps` : '—'}</div>`
     : `<div class="t3">${escapeHtml(secondary === 'style' ? (t.genre || t.codec || t.container || '') : (t.album || ''))}</div>
-       <div>${badge}</div>
+       <div class="qual">${badge}</div>
        <div class="num lufs" title="Integrated loudness · gain applied ${fmtDb(g.gainDb)} dB">${lufs != null ? lufs.toFixed(1) : '—'}</div>
-       <div class="num">${fmtTime(t.duration)}</div>`;
+       <div class="num dur">${fmtTime(t.duration)}</div>`;
 
   const cls = [
     'track',
@@ -726,7 +728,12 @@ function renderAlbums() {
     const current = player.track?.albumKey === a.key;
     return `<div class="album${current ? ' is-current' : ''}" data-key="${escapeHtml(a.key)}">
       <div class="tile" style="--cover:${tintOf(a.key).cover}">
-        <img data-art="${a.artId || ''}" class="is-empty" alt="">
+        <!-- Full size, not the thumb. A grid tile is 120–220 css px, so a phone
+             is asking it for 400-plus device pixels and a 128px thumb has to be
+             blown up nearly 4× — which is why the grid read soft next to the
+             record's own hero. Thumbs stay where they fit: the 40px track rows,
+             which is also where there are thousands of them. -->
+        <img data-art="${a.artId || ''}" data-size="full" class="is-empty" alt="">
         <div class="tile-cap">
           <b>${escapeHtml(a.name)}</b>
           <span>${a.trackCount} track${a.trackCount === 1 ? '' : 's'}</span>
@@ -766,13 +773,16 @@ function renderAlbumDetail(key) {
       <div class="hero-grain"></div>
       <div class="hero-fade"></div>
       <div class="hero-body">
-        <button class="tile" data-album-act="art" title="Set the record cover">
+        <!-- Not a button. Tapping the cover used to throw you straight into the
+             gallery, which on a phone is what happens every time you mean to
+             scroll. Setting the cover lives in Configure, where it is deliberate. -->
+        <div class="tile">
           <img data-art="${album.artId || ''}" data-size="full" class="is-empty" alt="">
           <div class="tile-cap">
             <b>${escapeHtml(album.name)}</b>
             <span>${album.trackCount} track${album.trackCount === 1 ? '' : 's'}</span>
           </div>
-        </button>
+        </div>
         <div class="hero-text">
           <div class="eyebrow">Record</div>
           <h2 class="display">${escapeHtml(album.name)}</h2>
@@ -825,7 +835,7 @@ function renderAlbumDetail(key) {
     </div>
     <div class="tl-head">
       <span></span><span>Title</span><span class="t3">Style</span>
-      <span>Quality</span><span class="lufs num">Loudness</span><span class="num">Time</span><span></span>
+      <span class="qual">Quality</span><span class="lufs num">Loudness</span><span class="num dur">Time</span><span></span>
     </div>
     <div class="track-list" id="album-tracks">${tracks.map((t) =>
     trackRow(t, { draggable: true, secondary: 'style' })).join('')}</div>`;
@@ -1515,10 +1525,13 @@ function stopMeter() {
  *  animation, so pausing freezes the record where it stands instead of snapping
  *  the cover back to a square. */
 const setSpin = (on) => {
-  const press = !!state.settings.spinDisc;
+  const s = state.settings;
   for (const box of [$('#p-art-box'), $('#now-art-box')]) {
-    box?.classList.toggle('press', press);
-    box?.classList.toggle('spin', press && !!on);
+    // Two switches: `press` is the vinyl shape, `spin` is the rotation. Turning
+    // the cover off leaves the grooves turning over a square, which is what the
+    // app did before the record face existed.
+    box?.classList.toggle('press', !!s.spinDisc && !!s.discCover);
+    box?.classList.toggle('spin', !!s.spinDisc && !!on);
   }
 };
 
@@ -1820,6 +1833,8 @@ function bindSettings() {
   // The tint is baked into each tile's inline --cover, so the lists have to redraw.
   bindCheck('#set-tint', 'tintedCovers', renderAll);
   bindCheck('#set-spin', 'spinDisc', () => setSpin(player.playing));
+  bindCheck('#set-disc-cover', 'discCover', () => setSpin(player.playing));
+  bindCheck('#set-phone-cols', 'phoneColumns', applyTheme);
   bindCheck('#set-meter', 'liveMeter', () => syncMeter());
 
   /* -- backdrop -- */
@@ -1934,6 +1949,8 @@ function applySettingsToUI() {
   $('#set-haze-val').textContent = `${Math.round(s.haze * 100)} %`;
   $('#set-tint').checked = s.tintedCovers;
   $('#set-spin').checked = s.spinDisc;
+  $('#set-disc-cover').checked = s.discCover;
+  $('#set-phone-cols').checked = s.phoneColumns;
   $('#set-meter').checked = s.liveMeter;
   $('#set-backdrop-mono').checked = s.backdropMono;
   $('#set-backdrop-dim').value = s.backdropDim;

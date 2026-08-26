@@ -688,6 +688,90 @@ try {
   ok('tapping Play does not', !bar.playOpens);
   ok('the button gets the tap instead', bar.playGotClick);
 
+  /* ---------- 11f. the record's Configure menu on a phone ----------
+     Its 270px minimum hung off a button two thirds across the row and ran past
+     the right edge, which gave the stage a sideways scroll you could drag the
+     whole record around with. And the cover was a button that threw you into
+     the gallery on the way past. */
+  await page.send('Emulation.setDeviceMetricsOverride', { width: 360, height: 640, deviceScaleFactor: 2, mobile: true });
+  const cfg = await page.evaluate(async () => {
+    document.querySelector('.tab[data-view="albums"]').click();
+    await new Promise((r) => setTimeout(r, 250));
+    document.querySelector('.album')?.click();
+    await new Promise((r) => setTimeout(r, 350));
+    const scrollers = () => [...document.querySelectorAll('.stage,.view,.album-detail,.shell,#album-detail')]
+      .filter((el) => el.scrollWidth > el.clientWidth + 1)
+      .map((el) => `${el.className || el.id}:${el.scrollWidth}>${el.clientWidth}`);
+    const before = scrollers();
+    document.querySelector('#btn-album-config').click();
+    await new Promise((r) => setTimeout(r, 250));
+    const menu = document.querySelector('#album-config');
+    const m = menu.getBoundingClientRect();
+    const cover = document.querySelector('.hero .tile');
+    return {
+      opened: !menu.classList.contains('hidden'),
+      beforeScrollers: before,
+      afterScrollers: scrollers(),
+      docOverflows: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      menuLeft: Math.round(m.left),
+      menuRight: Math.round(m.right),
+      viewport: document.documentElement.clientWidth,
+      coverIsButton: cover?.tagName === 'BUTTON' || !!cover?.dataset.albumAct,
+      // Every remaining way to set a cover, so removing the tap did not strand it.
+      setCoverInMenu: [...menu.querySelectorAll('[data-album-act="art"]')].length,
+    };
+  });
+  ok('the record opens and Configure with it', cfg.opened);
+  ok('nothing scrolled sideways before it opened', cfg.beforeScrollers.length === 0, cfg.beforeScrollers.join(' '));
+  ok('and nothing does with the menu open', cfg.afterScrollers.length === 0, cfg.afterScrollers.join(' '));
+  ok('the document does not overflow either', !cfg.docOverflows);
+  ok('the menu stays inside the screen', cfg.menuLeft >= 0 && cfg.menuRight <= cfg.viewport,
+    `${cfg.menuLeft}..${cfg.menuRight} in ${cfg.viewport}`);
+  ok('the cover is no longer a picker button', !cfg.coverIsButton);
+  ok('Set cover is still reachable from Configure', cfg.setCoverInMenu === 1);
+
+  /* ---------- 11g. phone track lists carry the title alone by default ---------- */
+  const cols = await page.evaluate(async () => {
+    // The header, not a row: whether the Quality tab has anything to list
+    // depends on the codec target, and the columns are the point either way.
+    const seen = (view) => {
+      const head = document.querySelector(`.view[data-view="${view}"] .tl-head`);
+      if (!head) return null;
+      const vis = (sel) => {
+        const el = head.querySelector(sel);
+        return !!el && getComputedStyle(el).display !== 'none';
+      };
+      return { qual: vis('.qual'), dur: vis('.dur') };
+    };
+    const out = { attr: document.documentElement.dataset.cols, albums: seen('albums') };
+    document.querySelector('.tab[data-view="tracks"]').click();
+    await new Promise((r) => setTimeout(r, 250));
+    out.tracks = seen('tracks');
+    document.querySelector('.tab[data-view="quality"]').click();
+    await new Promise((r) => setTimeout(r, 250));
+    out.quality = seen('quality');
+    // Turning the setting on has to bring them straight back.
+    document.querySelector('.tab[data-view="settings"]').click();
+    await new Promise((r) => setTimeout(r, 200));
+    const box = document.querySelector('#set-phone-cols');
+    out.defaultUnchecked = !box.checked;
+    box.click();
+    await new Promise((r) => setTimeout(r, 300));
+    out.attrOn = document.documentElement.dataset.cols;
+    document.querySelector('.tab[data-view="tracks"]').click();
+    await new Promise((r) => setTimeout(r, 250));
+    out.tracksOn = seen('tracks');
+    box.click();
+    await new Promise((r) => setTimeout(r, 300));
+    return out;
+  });
+  await page.send('Emulation.clearDeviceMetricsOverride');
+  ok('the phone default is title only', cols.attr === 'name' && cols.defaultUnchecked);
+  ok('the record list drops quality and time', cols.albums && !cols.albums.qual && !cols.albums.dur);
+  ok('so does the tracks list', cols.tracks && !cols.tracks.qual && !cols.tracks.dur);
+  ok('the Quality tab keeps its quality column', cols.quality?.qual === true, JSON.stringify(cols.quality));
+  ok('the switch brings the columns back', cols.attrOn === 'all' && cols.tracksOn?.qual === true);
+
   /* ---------- 11e. Settings → Version ---------- */
   const ver = await page.evaluate(async () => {
     document.querySelector('.tab[data-view="settings"]').click();

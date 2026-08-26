@@ -65,8 +65,9 @@ corners, one accent colour — the **Offpress** design.
 - The **press turns the cover itself**. Where a record has artwork, the artwork is cut to
   the record's face and rotates under the grooves, with the spindle punched at the middle;
   a record with no cover turns its grooves over the tinted sleeve as before. Pausing
-  freezes it where it stands rather than snapping it back upright, and the whole effect is
-  the **Turning press** switch in Settings → Appearance.
+  freezes it where it stands rather than snapping it back upright. Two switches in
+  Settings → Appearance: **Spin the press** turns the rotation off entirely, and **Turn the
+  cover into a spinning record** keeps the grooves turning but leaves the cover a square.
 - On a phone, tapping **anywhere on the transport bar** — the whole strip, not just the
   cover — opens the **Now-playing screen**, and a chevron on the mini player says so.
   It carries the turning record, the track, the wide scrubber over the same measured
@@ -80,10 +81,19 @@ corners, one accent colour — the **Offpress** design.
   is where there is room for them.
 - A **track title too long for its box slides across and back** rather than being cut off,
   on the Now-playing screen and on the mini player. Whether it moves at all is measured,
-  not guessed: a title that fits is left perfectly still. Also on a phone, the quality
-  badge drops to an abbreviation (`LSL`, `HI`, `STD`, `LOW`, `POOR`) and its column
-  narrows, which is where the title gets most of its room back. The full wording stays in
-  the track dialog.
+  not guessed: a title that fits is left perfectly still.
+- On a phone the track lists carry **the title alone** — quality and time are dropped so a
+  long name has the row to itself, and **Quality and time columns on phones** in
+  Settings → Appearance puts them back. With them on, the quality badge drops to an
+  abbreviation (`LSL`, `HI`, `STD`, `LOW`, `POOR`) to fit. The Quality tab always keeps its
+  own columns, and the full wording stays in the track dialog.
+- The record grid draws the **full-size stored cover**, not the 128 px thumbnail. A grid
+  tile is 120–220 css px, so a phone asks it for 400-plus device pixels and the thumb was
+  being blown up nearly 4× — which is why the grid read soft next to the record's own hero.
+  Thumbnails stay where they fit, on the 40 px track rows.
+- Tapping a record's cover does **not** open the file picker. Setting a cover is a
+  deliberate act behind **⚙ Configure → Set cover**; on a phone the tap-to-set version fired
+  every time you meant to scroll.
 - The page itself never scrolls. Only the stage and the folded rail do, so nothing can be
   dragged around the way a zoomed page can.
 - A record's hero carries a **live output meter** while something is playing. It reads

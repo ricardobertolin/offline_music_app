@@ -955,13 +955,29 @@ button.tile:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
 
   .tl-head,.track{grid-template-columns:40px minmax(0,2fr) 62px 48px 26px;gap:10px}
   .track .t3,.track .lufs,.tl-head .t3,.tl-head .lufs{display:none}
-  .track-list.compact .tl-head,.track-list.compact .track{grid-template-columns:40px minmax(0,2fr) 62px 26px}
-  .track-list.compact .t3,.track-list.compact .num.kbps{display:none}
+  /* .tl-head.compact is named too, not just the one inside a .track-list — the
+     Quality panel's header is a standalone sibling of its list, and without it
+     the header kept the desktop's six columns over four-column rows. */
+  .track-list.compact .tl-head,.track-list.compact .track,
+  .tl-head.compact{grid-template-columns:40px minmax(0,2fr) 62px 26px}
+  .track-list.compact .t3,.track-list.compact .num.kbps,
+  .tl-head.compact .t3,.tl-head.compact .num.kbps{display:none}
   /* "standard 88" is wider than the whole column here, and the word is the part
      the title can least afford. The tier keeps its colour, which carries most of
      the reading anyway; the full wording stays in the track dialog. */
   .badge[data-abbr]{font-size:0;letter-spacing:0;padding:2px 4px}
   .badge[data-abbr]::before{content:attr(data-abbr);font-size:8.5px;letter-spacing:.1em}
+
+  /* The default on a phone: the title gets the whole row. The Quality tab is
+     excluded — a quality list with the quality taken out is not a list. */
+  html[data-cols=name] .view:not([data-view=quality]) .tl-head,
+  html[data-cols=name] .view:not([data-view=quality]) .track,
+  html[data-cols=name] .view:not([data-view=quality]) .track-list.compact .tl-head,
+  html[data-cols=name] .view:not([data-view=quality]) .track-list.compact .track{
+    grid-template-columns:40px minmax(0,1fr) 26px;
+  }
+  html[data-cols=name] .view:not([data-view=quality]) .qual,
+  html[data-cols=name] .view:not([data-view=quality]) .dur{display:none}
 
   /* The whole bar opens the Now-playing screen, and the chevron says so.
      .t-now on its own came out 120px wide next to the controls — a target you
@@ -980,6 +996,16 @@ button.tile:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
   .chrome{flex-wrap:wrap;padding:8px 14px;gap:10px}
   .chrome-ctx,.chip-offline{display:none}
   .chrome .search{order:3;flex-basis:100%;max-width:none;margin-left:0}
+
+  /* Configure hangs off a button two thirds of the way across the row, and its
+     270px minimum then ran past the right edge and gave the stage a sideways
+     scroll. Dropping .menu-wrap out of the positioning chain re-anchors the
+     panel on .hero-actions, so it spans the row and cannot outgrow it. */
+  .hero-actions .menu-wrap{position:static}
+  .hero-actions .menu{left:0;right:0;min-width:0;width:auto}
+  /* Same reasoning for every other popover at this width: never wider than the
+     screen it has to fit on. */
+  .menu{min-width:0;max-width:calc(100vw - 28px)}
 }
 
 @media (max-width:600px){

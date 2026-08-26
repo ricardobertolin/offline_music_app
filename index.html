@@ -112,7 +112,7 @@
       </div>
       <div class="tl-head" id="tracks-head">
         <span></span><span>Title</span><span class="t3">Album</span>
-        <span>Quality</span><span class="lufs num">Loudness</span><span class="num">Time</span><span></span>
+        <span class="qual">Quality</span><span class="lufs num">Loudness</span><span class="num dur">Time</span><span></span>
       </div>
       <div id="track-list" class="track-list"></div>
       <div id="tracks-empty" class="empty">
@@ -172,7 +172,7 @@
         (resample / downmix / re-encode) and keeps the original unless you disable that in Settings.</p>
         <div class="tl-head compact" style="margin-top:14px">
           <span></span><span>Title</span><span class="t3">Format</span>
-          <span>Quality</span><span class="num kbps">Bitrate</span><span></span>
+          <span class="qual">Quality</span><span class="num kbps">Bitrate</span><span></span>
         </div>
         <div id="quality-list" class="track-list compact"></div>
       </div>
@@ -198,6 +198,13 @@
         </div>
         <label class="switch"><input id="set-tint" type="checkbox"><span>Tint records without a cover</span></label>
         <label class="switch"><input id="set-spin" type="checkbox"><span>Spin the press while playing</span></label>
+        <label class="switch"><input id="set-disc-cover" type="checkbox"><span>Turn the cover into a spinning record</span></label>
+        <p class="hint">The artwork is cut to the record's face and rotates under the grooves,
+        on the transport and the phone's Now-playing screen. Off, the cover stays a square and
+        only the grooves turn.</p>
+        <label class="switch"><input id="set-phone-cols" type="checkbox"><span>Quality and time columns on phones</span></label>
+        <p class="hint">Off by default: under 860 px the track lists carry the title alone, so a
+        long name has the row to itself. The Quality tab always keeps its columns.</p>
         <label class="switch"><input id="set-meter" type="checkbox"><span>Live output meter on the record hero (desktop)</span></label>
         <p class="hint">The meter reads the actual playback signal after normalization, so it
         moves with what you hear rather than to a timer.</p>

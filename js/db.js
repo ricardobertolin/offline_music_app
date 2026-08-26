@@ -104,6 +104,8 @@ export const DEFAULTS = {
   haze: 0.08,               // grain opacity over covers and record heroes
   tintedCovers: true,       // colour records that have no cover art
   spinDisc: true,           // rotate the press on the transport while playing
+  discCover: true,          // ...and cut the cover itself to the record's face
+  phoneColumns: false,      // phones show title only; true brings quality + time back
   backdrop: 'none',         // none | grooves | halftone | sleeve | image — see BACKDROPS
   backdropMono: true,       // drain the colour out of an image backdrop
   backdropDim: 0.35,        // scrim over an image backdrop, so text stays readable
