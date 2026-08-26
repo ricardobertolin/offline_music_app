@@ -175,6 +175,44 @@ If a library imported by an earlier build shows the wrong cover somewhere,
 **Settings → Repair covers from files** re-reads the artwork embedded in each audio file
 and reassigns it.
 
+### Backup and restore
+
+The library lives in IndexedDB, which a cleared profile, a reinstall or a browser
+reclaiming disk space will take with it. **Settings → Back up the library** writes an
+ordinary `.zip` — your audio, your covers, and a `manifest.json` holding every
+measurement — straight to a file you choose, streamed, so a 40 GB library never has to fit
+in memory. Nothing is uploaded, and the archive opens in any unzip tool.
+
+Restoring merges by content hash (so re-reading a backup you already have adds nothing) or
+replaces the library outright. What comes back is not just the files: the loudness
+histograms, quality scores, hand-set covers, tag edits and the track orders you dragged
+into place all survive, because recomputing those is the expensive part.
+
+**Measurements only** leaves the audio out. It is small and quick, and still worth taking:
+restore it, re-import the same files, and each one reattaches to the row that already holds
+its analysis instead of being imported fresh.
+
+### Linked folders
+
+Importing copies files into IndexedDB, which means a second copy of your music on disk.
+**Add album → Link a folder** instead reads a folder where it sits: only the metadata,
+artwork and measurements are stored, which is a few MB. Files you add to the folder turn up
+on the next **Rescan**, and a file that only moved is followed by its content hash rather
+than imported again.
+
+Deleting a linked track removes the record and leaves the file alone; unlinking a folder
+never touches the folder. Linking needs the File System Access API, so it is offered only
+where the browser has it (desktop Chromium) — and because browsers do not always keep
+folder permission across a reload, Settings shows a **Reconnect** button when one lapses.
+
+### Report
+
+The **Report** tab adds up what the import pass already measured: quality tiers across the
+library, loudness against the target, where each file's spectrum actually stops, which
+codecs are eating the space, what the detector flagged and how often, records whose tracks
+span more than 3 LU (usually a compilation, or two different rips), and the extremes.
+Everything on it is a link into the list it came from. Nothing is computed fresh.
+
 ## Using it
 
 **Add album** takes a whole folder or a **.zip archive**; **Add track** takes individual
@@ -244,7 +282,9 @@ relative, so it works from `/<repo>/` without configuration.
 
 Chrome, Edge and Android Chrome get everything. Firefox and Safari get the full library,
 analysis and playback; Opus re-encoding needs WebCodecs, and where it is missing the app
-says so in Settings and falls back to WAV.
+says so in Settings and falls back to WAV. Linking folders needs the File System Access
+API, so that option only appears on desktop Chromium; backup and restore work everywhere,
+though without the API the archive is downloaded rather than streamed to a chosen file.
 
 ## Layout
 
@@ -252,7 +292,9 @@ says so in Settings and falls back to WAV.
 index.html            app shell            sw.js              offline cache + share target
 js/app.js             UI                   js/library.js      import, albums, jobs
 js/db.js              IndexedDB            js/metadata.js     ID3 / MP4 / FLAC / Ogg / WAV tags
-js/image.js           artwork pipeline    js/zip.js          ZIP reader (store/deflate/ZIP64)
+js/image.js           artwork pipeline     js/zip.js          ZIP reader (store/deflate/ZIP64)
+js/zipwrite.js        ZIP writer (stream)  js/archive.js      backup + restore
+js/source.js          stored vs linked     js/report.js       library aggregates
 js/dsp/loudness.js    BS.1770-4            js/dsp/quality.js  spectrum, clipping, scoring
 js/dsp/analyzer-worker.js                  off-main-thread analysis
 js/audio/decode.js    decode + worker pool js/audio/player.js playback graph + gain
@@ -269,4 +311,8 @@ js/audio/wav.js       PCM writer           tests/             node test scripts
 - Loudness figures are within ~0.1 LU of the reference in the checks in `tests/`, but
   this has not been run against the full EBU Tech 3341 compliance set.
 - Ask for persistent storage in Settings, otherwise a browser under disk pressure may
-  evict the library.
+  evict the library — and take a backup, which is the only thing that survives a cleared
+  profile or a new machine.
+- A directory handle belongs to the browser that created it, so linked folders cannot
+  travel in a backup. Those rows are restored with their measurements and wait to be
+  linked again.

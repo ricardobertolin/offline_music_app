@@ -44,6 +44,10 @@
         <button class="menu-item" data-source="zip" role="menuitem">
           <b>From a .zip archive</b><span>Unpacked here — nothing is uploaded</span>
         </button>
+        <!-- Shown only where the File System Access API exists; app.js hides it. -->
+        <button class="menu-item needs-link hidden" data-source="link" role="menuitem">
+          <b>Link a folder</b><span>Read it in place — no second copy on disk</span>
+        </button>
       </div>
     </div>
     <button id="btn-add-track" class="btn" title="Add individual tracks">Add track</button>
@@ -59,6 +63,7 @@
       <button class="tab" data-view="albums" role="tab"><span>Records</span><em id="n-albums">0</em></button>
       <button class="tab is-active" data-view="tracks" role="tab"><span>Tracks</span><em id="n-tracks">0</em></button>
       <button class="tab" data-view="quality" role="tab"><span>Quality</span><em id="n-quality">0</em></button>
+      <button class="tab" data-view="report" role="tab"><span>Report</span><em id="n-report">0</em></button>
     </nav>
 
     <div class="rail-group">
@@ -129,6 +134,9 @@
               <button class="menu-item" data-source="zip" role="menuitem">
                 <b>From a .zip archive</b><span>Unpacked here — nothing is uploaded</span>
               </button>
+              <button class="menu-item needs-link hidden" data-source="link" role="menuitem">
+                <b>Link a folder</b><span>Read it in place — no second copy on disk</span>
+              </button>
             </div>
           </div>
           <button class="btn" data-act="track">Add track</button>
@@ -176,6 +184,16 @@
         </div>
         <div id="quality-list" class="track-list compact"></div>
       </div>
+    </section>
+
+    <!-- REPORT — everything the import pass measured, added up. Nothing here is
+         computed fresh; it is all read back out of IndexedDB. -->
+    <section class="view" data-view="report">
+      <div class="stage-head">
+        <div class="eyebrow">Collection</div>
+        <h1 class="display">Report</h1>
+      </div>
+      <div id="report-body"></div>
     </section>
 
     <!-- SETTINGS -->
@@ -328,13 +346,52 @@
       </div>
 
       <div class="panel">
+        <h3>Backup</h3>
+        <p class="hint">The library lives in this browser's storage, which a cleared profile,
+        a reinstall or the browser reclaiming space will take with it. A backup is an ordinary
+        <b>.zip</b> — your audio, your covers and a manifest of every measurement — written
+        straight to a file you choose. Nothing is uploaded.</p>
+        <div class="field">
+          <label>What to include</label>
+          <div class="segmented" id="set-backup-scope" role="radiogroup" aria-label="Backup contents">
+            <button type="button" role="radio" data-scope="full" class="is-active" aria-checked="true">Everything</button>
+            <button type="button" role="radio" data-scope="meta" aria-checked="false">Measurements only</button>
+          </div>
+          <p class="hint" id="backup-estimate">—</p>
+        </div>
+        <label class="switch"><input id="set-backup-originals" type="checkbox" checked><span>Include kept originals</span></label>
+        <div class="row">
+          <button id="btn-backup" class="btn primary">Back up the library…</button>
+          <button id="btn-restore" class="btn ghost">Restore from a backup…</button>
+        </div>
+        <p class="hint"><b>Measurements only</b> leaves the audio out, so it is small and quick.
+        It is still worth taking: restore it, re-import the same files, and every track reattaches
+        by content hash with its loudness, quality, artwork and tag edits intact.</p>
+      </div>
+
+      <div class="panel" id="folders-panel" hidden>
+        <h3>Linked folders</h3>
+        <p class="hint">A linked folder is read where it sits, so the app never keeps a second
+        copy of your music. Only the measurements are stored here, which is a few MB. Files you
+        add to the folder show up on the next scan.</p>
+        <div id="folder-list" class="folder-list"></div>
+        <div class="row">
+          <button id="btn-link-folder" class="btn ghost">Link a folder…</button>
+        </div>
+        <p class="hint" id="folder-note">Browsers do not always keep folder permission across a
+        reload — if a linked track will not play, reconnect it here.</p>
+      </div>
+
+      <div class="panel">
         <h3>Storage</h3>
         <p class="hint" id="storage-info"></p>
         <div class="row">
           <button id="btn-persist" class="btn ghost">Request persistent storage</button>
-          <button id="btn-export" class="btn ghost">Export library metadata</button>
+          <button id="btn-export" class="btn ghost">Export metadata as JSON</button>
           <button id="btn-wipe" class="btn ghost danger">Delete everything</button>
         </div>
+        <p class="hint">The JSON export is a readable report, not a backup — use <b>Back up the
+        library</b> above for something you can restore.</p>
       </div>
 
       <div class="panel">
@@ -473,6 +530,7 @@
 <input id="dir-input" type="file" webkitdirectory directory multiple hidden>
 <input id="zip-input" type="file" accept=".zip,.zipx,application/zip,application/x-zip-compressed" multiple hidden>
 <input id="img-input" type="file" accept="image/*" hidden>
+<input id="backup-input" type="file" accept=".zip,application/zip,application/x-zip-compressed" hidden>
 
 <script type="module" src="./js/app.js"></script>
 </body>

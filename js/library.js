@@ -1,6 +1,7 @@
 /** Domain layer: importing, analysis, album aggregation, artwork and quality jobs. */
 
 import * as db from './db.js';
+import * as source from './source.js';
 import { readMetadata } from './metadata.js';
 import { analyzeBlob } from './audio/decode.js';
 import { transcode, matchesTarget } from './audio/transcode.js';
@@ -20,15 +21,23 @@ export const isAudioFile = (f) => (f.type && f.type.startsWith('audio/')) || isA
 /**
  * @param {File[]} files
  * @param {object} o { settings, onProgress(done,total,label), onTrack(track), signal }
+ * @param {string} [o.folderId] link rather than copy: the audio stays in the
+ *        user's own folder and only the measurements are stored — the files
+ *        must have come from source.scanFolder, which tags them with `linkPath`
  */
 export async function importFiles(files, o = {}) {
-  const { settings, onProgress, onTrack, signal } = o;
+  const { settings, onProgress, onTrack, signal, folderId = null } = o;
   // Import in folder order (numeric-aware), because that is the order an album
   // is meant to be played in when the tags are missing or wrong.
   const audio = files.filter(isAudioFile).sort((a, b) => naturalCompare(pathOf(a), pathOf(b)));
-  const result = { added: 0, skipped: 0, failed: [], total: audio.length };
+  const result = { added: 0, skipped: 0, reattached: 0, failed: [], total: audio.length };
   const known = await db.getAll('tracks');
   const existing = new Set(known.map((t) => t.hash));
+  // Rows waiting for their audio: restored from a metadata-only backup, or left
+  // behind when a linked folder went away. The file that comes back reattaches
+  // to the row that already holds its analysis, its cover and its tag edits —
+  // which is what makes a small backup worth taking at all.
+  const waiting = new Map(known.filter((t) => t.needsAudio || t.needsRelink).map((t) => [t.hash, t]));
   let pos = known.reduce((m, t) => Math.max(m, t.pos || 0), 0);
   const albumArt = new Map(); // albumKey → artId, so a 12-track album stores one cover
   const touched = new Set();
@@ -39,10 +48,26 @@ export async function importFiles(files, o = {}) {
     onProgress?.(i, audio.length, file.name);
     try {
       const hash = await fileHash(file);
+      const orphan = waiting.get(hash);
+      if (orphan) {
+        await reattach(orphan, file, folderId);
+        waiting.delete(hash);
+        existing.add(hash);
+        touched.add(orphan.albumKey);
+        await refreshAlbum(orphan.albumKey);
+        result.reattached++;
+        onTrack?.(orphan);
+        continue;
+      }
       if (existing.has(hash)) { result.skipped++; continue; }
 
       const meta = await readMetadata(file);
       const track = newTrack(file, meta, hash, ++pos);
+      if (folderId) {
+        track.source = 'folder';
+        track.folderId = folderId;
+        track.relPath = file.linkPath || file.name;
+      }
       touched.add(track.albumKey);
 
       if (meta.picture?.bytes?.length) {
@@ -59,7 +84,8 @@ export async function importFiles(files, o = {}) {
         track.artId = albumArt.get(track.albumKey) ?? await albumArtId(track.albumKey);
       }
 
-      await db.put('blobs', { id: track.id, blob: file });
+      // A linked track's audio stays where it is; only the record is stored.
+      if (!folderId) await db.put('blobs', { id: track.id, blob: file });
       await db.put('tracks', track);
       existing.add(hash);
       result.added++;
@@ -81,6 +107,100 @@ export async function importFiles(files, o = {}) {
   return result;
 }
 
+/**
+ * Give a waiting row its file back. Everything measured about the track is kept
+ * — only where the bytes live is rewritten, so a restored library comes back
+ * fully formed rather than needing a fresh analysis pass.
+ */
+async function reattach(track, file, folderId) {
+  if (folderId) {
+    track.source = 'folder';
+    track.folderId = folderId;
+    track.relPath = file.linkPath || file.name;
+  } else {
+    track.source = 'blob';
+    track.folderId = null;
+    await db.put('blobs', { id: track.id, blob: file });
+  }
+  track.fileName = file.name || track.fileName;
+  track.path = pathOf(file) || track.path;
+  track.size = file.size;
+  track.needsAudio = false;
+  track.needsRelink = false;
+  await db.put('tracks', track);
+  return track;
+}
+
+/* ----------------------------- linked folders ----------------------------- */
+
+/**
+ * Bring a linked folder up to date: import what is new, follow what moved, and
+ * report what has gone. Nothing is written to the folder and nothing is deleted
+ * from the library — a file that vanished is reported, not acted on, because
+ * "I unplugged the drive" and "I deleted that album" look identical from here.
+ *
+ * @returns {Promise<{added:number, skipped:number, moved:number, failed:Array,
+ *                    total:number, missing:object[]}>}
+ */
+export async function rescanFolder(folder, { settings, onProgress, signal } = {}) {
+  const files = await source.scanFolder(folder, {
+    keep: isAudioName,
+    signal,
+    onProgress: (n, path) => onProgress?.(0, 0, `Listing — ${n} found · ${path}`),
+  });
+
+  const mine = (await db.getAll('tracks')).filter((t) => t.folderId === folder.id && t.source === 'folder');
+  const byPath = new Map(mine.map((t) => [t.relPath, t]));
+  const onDisk = new Set(files.map((f) => f.linkPath));
+
+  // A file that was only moved or renamed keeps its content hash. Follow it,
+  // rather than importing a duplicate and leaving the old row pointing at a
+  // path that is not there any more. Only unknown paths are hashed, which is
+  // the same set importFiles would have hashed anyway.
+  const byHash = new Map(mine.map((t) => [t.hash, t]));
+  const fresh = [];
+  let moved = 0;
+  for (const file of files) {
+    if (signal?.aborted) break;
+    if (byPath.has(file.linkPath)) continue;
+    const hit = byHash.get(await fileHash(file));
+    if (hit && !onDisk.has(hit.relPath)) {
+      hit.relPath = file.linkPath;
+      hit.fileName = file.name;
+      await db.put('tracks', hit);
+      onDisk.add(file.linkPath);
+      moved++;
+    } else {
+      fresh.push(file);
+    }
+  }
+
+  const res = fresh.length
+    ? await importFiles(fresh, { settings, folderId: folder.id, onProgress, signal })
+    : { added: 0, skipped: 0, failed: [], total: 0 };
+
+  const missing = mine.filter((t) => !onDisk.has(t.relPath));
+  folder.lastScan = Date.now();
+  folder.trackCount = mine.length + res.added;
+  await db.put('folders', folder);
+  source.forgetCache();
+  return { ...res, moved, missing };
+}
+
+/**
+ * Drop a folder link. The files are the user's and are never touched — this only
+ * decides what happens to the *records* that pointed at them.
+ * @param {boolean} keepTracks leave the rows in place (they will report a
+ *        missing file until the folder is linked again)
+ */
+export async function unlinkFolder(id, { keepTracks = false } = {}) {
+  const tracks = (await db.getAll('tracks')).filter((t) => t.folderId === id);
+  let removed = 0;
+  if (!keepTracks) removed = (await deleteTracks(tracks.map((t) => t.id))).deleted;
+  await source.forgetFolder(id);
+  return { removed, kept: keepTracks ? tracks.length : 0 };
+}
+
 function newTrack(file, meta, hash, pos) {
   const base = (file.name || 'Unknown').replace(/\.[^.]+$/, '');
   const folder = folderOf(file);
@@ -90,6 +210,11 @@ function newTrack(file, meta, hash, pos) {
     pos,
     fileName: file.name || 'audio',
     path: pathOf(file),
+    // 'blob' = copied into IndexedDB, 'folder' = read from a linked folder.
+    // See source.js; importFiles overwrites this when it is linking.
+    source: 'blob',
+    folderId: null,
+    relPath: '',
     mime: file.type || '',
     size: file.size,
     addedAt: Date.now(),
@@ -133,10 +258,10 @@ async function albumArtId(key) {
 /* -------------------------------- analysis -------------------------------- */
 
 export async function analyzeTrack(track, { onProgress } = {}) {
-  const rec = await db.get('blobs', track.id);
-  if (!rec?.blob) throw new Error('Audio data is missing for this track');
+  const blob = await source.blobFor(track);
+  if (!blob) throw new Error('Audio data is missing for this track');
 
-  const res = await analyzeBlob(rec.blob, {
+  const res = await analyzeBlob(blob, {
     lossless: track.lossless,
     codec: track.codec,
     nativeSampleRate: track.sampleRate || 0,
@@ -308,7 +433,8 @@ export async function updateTracks(ids, fields, { onProgress, signal } = {}) {
     t.albumKey = albumKeyOf(t);
     touched.add(t.albumKey);
     await db.put('tracks', t);
-    onProgress?.(++done, tracks.length, t.title);
+    done++;
+    onProgress?.(done, tracks.length, t.title);
   }
   for (const key of touched) await refreshAlbum(key);
   return done;
@@ -467,10 +593,12 @@ export async function repairArtwork(settings, onProgress, signal) {
     if (signal?.aborted) break;
     const t = tracks[i];
     onProgress?.(i, tracks.length, t.title);
-    const rec = await db.get('blobs', t.id);
-    if (!rec?.blob) continue;
+    // A linked folder that is not reconnected simply has nothing to read here;
+    // skip those tracks rather than failing the whole pass.
+    const blob = await source.tryBlobFor(t);
+    if (!blob) continue;
     try {
-      const meta = await readMetadata(rec.blob);
+      const meta = await readMetadata(blob);
       if (meta.picture?.bytes?.length) {
         const art = await saveArtwork(meta.picture, settings);
         if (t.artId !== art.id) { t.artId = art.id; await db.put('tracks', t); fixed++; }
@@ -534,13 +662,13 @@ export function needsQualityNormalization(track, settings) {
  * The original can be kept (Settings) so the operation stays reversible.
  */
 export async function normalizeQuality(track, settings, { onProgress, signal } = {}) {
-  const rec = await db.get('blobs', track.id);
-  if (!rec?.blob) throw new Error('Audio data is missing for this track');
+  const original = await source.blobFor(track);
+  if (!original) throw new Error('Audio data is missing for this track');
 
   const before = { codec: track.codec, container: track.container, size: track.size, sampleRate: track.sampleRate, channels: track.channels };
   const gainDb = settings.bakeGain ? gainFor(track, settings, await db.get('albums', track.albumKey)).gainDb : 0;
 
-  const res = await transcode(rec.blob, {
+  const res = await transcode(original, {
     codec: settings.codec,
     bitrate: settings.bitrate,
     rate: settings.rate,
@@ -551,8 +679,15 @@ export async function normalizeQuality(track, settings, { onProgress, signal } =
     onProgress: (p) => onProgress?.(p * 0.7),
   });
 
-  if (settings.keepOriginal && !track.hasOriginal) {
-    await db.put('blobs', { id: `${track.id}:orig`, blob: rec.blob });
+  if (source.isLinked(track)) {
+    // Only *read* permission was ever granted on a linked folder, so the
+    // re-encode is stored here instead of being written over the user's file.
+    // That makes this reversible for nothing: the untouched original is still
+    // in the folder, so no second copy has to be kept to get back to it.
+    track.linked = { folderId: track.folderId, relPath: track.relPath, size: track.size };
+    track.source = 'blob';
+  } else if (settings.keepOriginal && !track.hasOriginal) {
+    await db.put('blobs', { id: `${track.id}:orig`, blob: original });
     track.hasOriginal = true;
   }
   await db.put('blobs', { id: track.id, blob: res.blob });
@@ -576,7 +711,37 @@ export async function normalizeQuality(track, settings, { onProgress, signal } =
   return track;
 }
 
+/** Whether restoreOriginal has anything to go back to — a kept copy, or the
+ *  untouched file still sitting in the linked folder it came from. */
+export const canRestore = (track) => !!(track?.hasOriginal || track?.linked);
+
 export async function restoreOriginal(track) {
+  // A track that was linked when it was normalized never lost its original:
+  // re-point it at the folder and drop the re-encode.
+  if (track.linked) {
+    const relinked = { ...track, source: 'folder', folderId: track.linked.folderId, relPath: track.linked.relPath };
+    const file = await source.blobFor(relinked);   // throws if the folder is gone
+    await db.del('blobs', track.id);
+    const meta = await readMetadata(file);
+    Object.assign(track, {
+      source: 'folder',
+      folderId: track.linked.folderId,
+      relPath: track.linked.relPath,
+      size: file.size,
+      codec: meta.codec || track.transcode?.from?.codec || track.codec,
+      container: meta.container || track.transcode?.from?.container || track.container,
+      lossless: !!meta.lossless,
+      sampleRate: meta.sampleRate || track.transcode?.from?.sampleRate || track.sampleRate,
+      channels: meta.channels || track.transcode?.from?.channels || track.channels,
+      linked: null,
+      transcode: null,
+    });
+    await db.put('tracks', track);
+    await analyzeTrack(track);
+    await refreshAlbum(track.albumKey);
+    return track;
+  }
+
   const orig = await db.get('blobs', `${track.id}:orig`);
   if (!orig?.blob) throw new Error('No original kept for this track');
   await db.put('blobs', { id: track.id, blob: orig.blob });
@@ -605,26 +770,33 @@ export const deleteTrack = (id) => deleteTracks([id]);
 /**
  * Remove tracks, their audio (and any kept original), then clean up artwork and
  * albums in a single pass — deleting 200 tracks shouldn't be 200 full scans.
- * @returns {Promise<{deleted:number, bytes:number, albums:string[]}>}
+ *
+ * A *linked* track has no audio here to delete: this removes it from the library
+ * and leaves the file in the user's folder exactly where it was. `freed` counts
+ * only bytes this app actually gives back.
+ *
+ * @returns {Promise<{deleted:number, bytes:number, freed:number, linked:number, albums:string[]}>}
  */
 export async function deleteTracks(ids, { onProgress, signal } = {}) {
   const wanted = new Set(ids);
   const tracks = (await db.getAll('tracks')).filter((t) => wanted.has(t.id));
   const albums = new Set(tracks.map((t) => t.albumKey));
-  let bytes = 0, done = 0;
+  let bytes = 0, freed = 0, linked = 0, done = 0;
 
   for (const t of tracks) {
     if (signal?.aborted) break;
-    await db.del('blobs', t.id);
+    if (source.isLinked(t)) linked++;
+    else { await db.del('blobs', t.id); freed += t.size || 0; }
     if (t.hasOriginal) await db.del('blobs', `${t.id}:orig`);
     await db.del('tracks', t.id);
     bytes += t.size || 0;
-    onProgress?.(++done, tracks.length, t.title);
+    done++;
+    onProgress?.(done, tracks.length, t.title);
   }
 
   await sweepArtwork();
   for (const key of albums) await refreshAlbum(key);
-  return { deleted: done, bytes, albums: [...albums] };
+  return { deleted: done, bytes, freed, linked, albums: [...albums] };
 }
 
 /** Delete every track in an album (and the album record with it). */
@@ -640,7 +812,10 @@ export async function deleteAlbum(key, opts = {}) {
 export const allTracks = () => db.getAll('tracks');
 export const allAlbums = () => db.getAll('albums');
 export const getTrack = (id) => db.get('tracks', id);
-export const getBlob = async (id) => (await db.get('blobs', id))?.blob || null;
+
+/** The audio for a track, from IndexedDB or from its linked folder.
+ *  @throws {source.NeedsPermissionError|source.MissingFileError} */
+export const getAudio = (track) => source.blobFor(track);
 
 export async function stats(settings) {
   const tracks = await db.getAll('tracks');
@@ -648,9 +823,15 @@ export async function stats(settings) {
   const lufs = analyzed.map((t) => t.loudness?.integratedLufs).filter((v) => typeof v === 'number');
   const scores = analyzed.map((t) => t.quality?.score).filter((v) => typeof v === 'number');
   const spread = lufs.length ? Math.max(...lufs) - Math.min(...lufs) : 0;
+  const linked = tracks.filter((t) => t.source === 'folder');
   return {
     tracks: tracks.length,
     analyzed: analyzed.length,
+    linked: linked.length,
+    // What the app itself is holding, as opposed to what it can play: linked
+    // audio counts towards the library's size but not towards its storage.
+    storedBytes: tracks.reduce((a, t) => a + (t.source === 'folder' ? 0 : t.size || 0), 0),
+    linkedBytes: linked.reduce((a, t) => a + (t.size || 0), 0),
     bytes: tracks.reduce((a, t) => a + (t.size || 0), 0),
     duration: tracks.reduce((a, t) => a + (t.duration || 0), 0),
     avgLufs: lufs.length ? Math.round((lufs.reduce((a, b) => a + b, 0) / lufs.length) * 10) / 10 : null,

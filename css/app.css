@@ -325,10 +325,13 @@ html[data-backdrop=image]{
 .view{display:none}
 .view.is-active{display:block}
 .view > *{padding-left:38px;padding-right:38px}
+/* The report writes its panels into a container rather than straight into the
+   view, so the gutter rules take both. The container itself adds nothing. */
+#report-body{padding:0}
 /* Bordered blocks are cards, not full-bleed bands — they indent with margin so
    the rule sits at the page gutter instead of the window edge. */
-.view > .panel,.view > .quality-summary{padding-left:18px;padding-right:18px;margin-left:38px;margin-right:38px}
-.view > .quality-summary{padding:0}
+:is(.view,#report-body) > :is(.panel,.quality-summary){padding-left:18px;padding-right:18px;margin-left:38px;margin-right:38px}
+:is(.view,#report-body) > .quality-summary{padding:0}
 /* The record hero bleeds to the edges, so the detail pane indents its own children. */
 .view > .album-detail{padding-left:0;padding-right:0}
 .album-detail > :not(.hero){padding-left:38px;padding-right:38px}
@@ -682,6 +685,96 @@ button.tile:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
 }
 .chart-wrap{padding-bottom:22px}
 
+/* ================================ report ================================ */
+
+/* The tier colours are the badges' own, so a bar and a row badge never disagree
+   about what "high" looks like. */
+.rep-bar{display:flex;height:26px;border:1px solid var(--line-2);background:var(--ink-4)}
+.rep-bar i,.rep-key i{display:block}
+.rep-bar i + i{border-left:1px solid var(--ink-0)}
+.rep-key i{width:9px;height:9px;flex:0 0 9px}
+.tier-lossless{background:#6ee7a8}
+.tier-high{background:#7fb8ff}
+.tier-standard{background:#e8c85a}
+.tier-low{background:#e89a5a}
+.tier-poor{background:var(--danger)}
+.rep-legend{display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:10px}
+.rep-key{
+  display:flex;align-items:center;gap:6px;
+  font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--fg-3);
+}
+.rep-key b{font-family:var(--mono);font-size:11px;letter-spacing:0;color:var(--fg-hi)}
+
+/* A label, a proportional bar and the count — the shape most of the report uses. */
+.rep-rows{display:flex;flex-direction:column;gap:7px}
+.rep-row{display:grid;grid-template-columns:minmax(90px,1.1fr) 3fr auto;align-items:center;gap:12px}
+.rep-label{
+  font-size:11px;color:var(--fg-2);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.rep-label em{font-style:normal;font-family:var(--mono);font-size:10px;color:var(--fg-4)}
+.rep-track{display:block;height:8px;background:rgba(255,255,255,.07);border:1px solid var(--line)}
+.rep-track i{display:block;height:100%;background:var(--accent);min-width:1px}
+.rep-track i.on{background:#6ee7a8}
+.rep-track i.loud{background:var(--danger)}
+.rep-track i.quiet{background:#7fb8ff}
+.rep-track i.warn{background:#e8c85a}
+.rep-row > b{font-family:var(--mono);font-size:11px;color:var(--fg-hi);text-align:right}
+
+.rep-hist{height:110px}
+
+.rep-chips{display:flex;flex-wrap:wrap;gap:8px}
+.rep-chip{
+  display:inline-flex;align-items:baseline;gap:6px;
+  border:1px solid var(--line-2);background:transparent;color:var(--fg-2);
+  padding:6px 11px;font:inherit;font-size:11px;text-align:left;
+}
+button.rep-chip{cursor:pointer}
+button.rep-chip:hover{border-color:var(--accent);color:var(--fg-hi)}
+.rep-chip b{font-family:var(--mono);font-size:13px;color:var(--fg-hi)}
+
+.rep-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:18px}
+.rep-col h4{
+  margin:0 0 8px;font-size:9px;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--fg-4);font-weight:500;
+}
+.rep-list{display:flex;flex-direction:column}
+.rep-item{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;
+  appearance:none;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;
+  border:0;border-bottom:1px solid var(--line);padding:7px 0;
+}
+.rep-item:hover{background:rgba(255,255,255,.04)}
+.rep-item-main{min-width:0;display:flex;flex-direction:column;gap:2px}
+.rep-item-main b{
+  font-weight:400;font-size:12px;color:var(--fg);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.rep-item-main em{font-style:normal;font-size:10px;color:var(--fg-4);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rep-item-val{
+  flex:0 0 auto;text-align:right;font-family:var(--mono);font-size:11px;color:var(--fg-hi);
+}
+.rep-item-val i{display:block;font-style:normal;font-size:9px;color:var(--fg-4)}
+
+/* ============================ linked folders ============================ */
+
+.folder-list{display:flex;flex-direction:column;margin-bottom:14px}
+.folder{
+  display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;
+  padding:11px 0;border-bottom:1px solid var(--line);
+}
+.folder-main{min-width:0;display:flex;flex-direction:column;gap:3px}
+.folder-main b{font-weight:500;color:var(--fg-hi);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* A link the browser has stopped honouring is not an error, but it is not
+   working either — mark it so the Reconnect button is not a surprise. */
+.folder.is-stale .folder-main b::after{
+  content:"needs reconnecting";
+  margin-left:8px;font-size:8.5px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--danger);
+}
+.folder-acts{display:flex;gap:8px;flex-wrap:wrap}
+
 /* ============================== transport ============================== */
 
 .transport{
@@ -922,7 +1015,7 @@ button.tile:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
 
 @media (max-width:1000px){
   .view > *{padding-left:22px;padding-right:22px}
-  .view > .panel,.view > .quality-summary{margin-left:22px;margin-right:22px}
+  :is(.view,#report-body) > :is(.panel,.quality-summary){margin-left:22px;margin-right:22px}
   .view > .album-detail{padding-left:0;padding-right:0}
   .album-detail > :not(.hero){padding-left:22px;padding-right:22px}
   .hero{padding:26px 22px 22px}
@@ -1011,7 +1104,7 @@ button.tile:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
 @media (max-width:600px){
   .display{font-size:30px}
   .view > *{padding-left:14px;padding-right:14px}
-  .view > .panel,.view > .quality-summary{margin-left:14px;margin-right:14px}
+  :is(.view,#report-body) > :is(.panel,.quality-summary){margin-left:14px;margin-right:14px}
   .view > .album-detail{padding-left:0;padding-right:0}
   .album-detail > :not(.hero){padding-left:14px;padding-right:14px}
   .hero{padding:20px 14px 18px}

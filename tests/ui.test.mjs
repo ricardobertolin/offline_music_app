@@ -47,7 +47,10 @@ window.__mk = async (folder, names) => {
   return names.map((name, i) => {
     const ch = new Float32Array(n);
     for (let s = 0; s < n; s++) ch[s] = 0.2 * Math.sin(2 * Math.PI * (200 + i * 50) * s / rate);
-    const f = new File([encodeWav([ch, ch], rate, 16)], name, { type: 'audio/wav' });
+    // Dither off: it is TPDF noise from Math.random(), so with it on the same
+    // fixture built twice is two different files with two different content
+    // hashes — which is exactly what the reattach tests rely on matching.
+    const f = new File([encodeWav([ch, ch], rate, 16, false)], name, { type: 'audio/wav' });
     Object.defineProperty(f, 'relPath', { value: folder + '/' + name, enumerable: true });
     return f;
   });
@@ -477,14 +480,24 @@ try {
     btn.click();
     await new Promise((r) => setTimeout(r, 100));
     const openAfterClick = !m.classList.contains('hidden');
-    const items = [...m.querySelectorAll('.menu-item')].map((i) => i.dataset.source);
+    const items = [...m.querySelectorAll('.menu-item:not(.hidden)')].map((i) => i.dataset.source);
     document.body.click();
     await new Promise((r) => setTimeout(r, 100));
-    return { closedAtFirst, openAfterClick, items, closedAfterOutside: m.classList.contains('hidden') };
+    return {
+      closedAtFirst,
+      openAfterClick,
+      items,
+      canLink: typeof window.showDirectoryPicker === 'function',
+      closedAfterOutside: m.classList.contains('hidden'),
+    };
   });
   ok('the add-album menu starts closed', menu.closedAtFirst);
   ok('clicking Add album opens it', menu.openAfterClick);
-  eq('it offers folder and zip', menu.items, ['folder', 'zip']);
+  eq('it offers folder and zip', menu.items.filter((s) => s !== 'link'), ['folder', 'zip']);
+  // Linking a folder needs the File System Access API, so the item has to be
+  // there exactly when the browser can honour it — never as a dead option.
+  eq('and folder linking only where the browser supports it',
+    menu.items.includes('link'), menu.canLink);
   ok('clicking elsewhere closes it', menu.closedAfterOutside);
 
   /* ---------- 11b. the empty state's own Add album menu ----------
@@ -498,13 +511,13 @@ try {
     btn.dispatchEvent(new MouseEvent('click', at));   // bubbles, like a real tap
     await new Promise((res) => setTimeout(res, 120));
     const open = !m.classList.contains('hidden');
-    const items = [...m.querySelectorAll('.menu-item')].map((i) => i.dataset.source);
+    const items = [...m.querySelectorAll('.menu-item:not(.hidden)')].map((i) => i.dataset.source);
     document.body.click();
     await new Promise((res) => setTimeout(res, 120));
     return { open, items, closedAfterOutside: m.classList.contains('hidden') };
   });
   ok('the empty state has its own add-album menu that stays open', emptyMenu.open);
-  eq('it offers the same two sources', emptyMenu.items, ['folder', 'zip']);
+  eq('it offers the same sources as the header', emptyMenu.items, menu.items);
   ok('and closes on an outside click', emptyMenu.closedAfterOutside);
 
   /* ---------- 11c. the phone Now-playing screen ---------- */
@@ -925,6 +938,397 @@ try {
   })()`);
   eq('a blank artist falls back', blanks.artist, 'Unknown Artist');
   ok('a blank title falls back to the file name', blanks.title.length > 0, blanks.title);
+
+  /* ================================================================
+     13. backup and restore — the whole point is that it comes back.
+     ================================================================ */
+
+  await page.goto(URL);
+  await bootWait();
+  await page.evaluate(MAKE_FILES);
+  await page.evaluate(async () => {
+    const lib = await import('./js/library.js');
+    const dbm = await import('./js/db.js');
+    await dbm.wipe();
+    const settings = await dbm.settings();
+    const files = await window.__mk('Backup Test', ['01 one.wav', '02 two.wav']);
+    await lib.importFiles(files, { settings });
+    // Custom order and a hand-set cover are the two things nothing can recompute.
+    const tracks = await dbm.getAll('tracks');
+    const ids = tracks.map((t) => t.id).sort();
+    await lib.setAlbumOrder(tracks[0].albumKey, [ids[1], ids[0]]);
+    const px = new Uint8Array([255, 0, 0, 255]);
+    const canvas = new OffscreenCanvas(8, 8);
+    const ctx = canvas.getContext('2d');
+    ctx.putImageData(new ImageData(new Uint8ClampedArray(8 * 8 * 4).fill(200), 8, 8), 0, 0);
+    void px;
+    const cover = await canvas.convertToBlob({ type: 'image/png' });
+    await lib.setAlbumArt(tracks[0].albumKey, cover, settings);
+  });
+
+  const before = await page.evaluate(async () => {
+    const dbm = await import('./js/db.js');
+    const tracks = await dbm.getAll('tracks');
+    const albums = await dbm.getAll('albums');
+    const t = tracks[0];
+    return {
+      tracks: tracks.length,
+      albums: albums.length,
+      art: (await dbm.getAll('art')).length,
+      order: albums[0].order,
+      sortMode: albums[0].sortMode,
+      lufs: t.loudness.integratedLufs,
+      histSum: [...t.loudness.hist].reduce((a, b) => a + b, 0),
+      histLen: t.loudness.hist.length,
+      envLen: t.loudness.envelope.length,
+      envSum: [...t.loudness.envelope].reduce((a, b) => a + b, 0),
+      score: t.quality.score,
+      artId: t.artId,
+      hashes: tracks.map((x) => x.hash).sort(),
+    };
+  });
+  ok('the fixture library is there to back up', before.tracks === 2 && before.art >= 1,
+    JSON.stringify({ tracks: before.tracks, art: before.art }));
+
+  /* Write the archive, wipe everything, read it back. */
+  const restored = await page.evaluate(async () => {
+    const arc = await import('./js/archive.js');
+    const dbm = await import('./js/db.js');
+    const lib = await import('./js/library.js');
+    const settings = await dbm.settings();
+
+    const { stream, name } = await arc.exportStream({ settings });
+    const blob = await new Response(stream).blob();
+    window.__backup = new File([blob], name, { type: 'application/zip' });
+
+    const seen = await arc.inspect(window.__backup);
+    await dbm.wipe();
+    const res = await arc.restoreLibrary(window.__backup, { mode: 'replace' });
+    await lib.refreshAllAlbums();
+
+    const tracks = await dbm.getAll('tracks');
+    const albums = await dbm.getAll('albums');
+    const t = tracks[0];
+    const art = await dbm.getAll('art');
+    const audio = await dbm.get('blobs', t.id);
+    return {
+      archiveBytes: blob.size,
+      archiveName: name,
+      manifestTracks: seen.manifest.counts.tracks,
+      manifestApp: seen.manifest.app,
+      res,
+      tracks: tracks.length,
+      albums: albums.length,
+      art: art.length,
+      order: albums[0].order,
+      sortMode: albums[0].sortMode,
+      lufs: t.loudness.integratedLufs,
+      histSum: [...t.loudness.hist].reduce((a, b) => a + b, 0),
+      histLen: t.loudness.hist.length,
+      histIsTyped: t.loudness.hist instanceof Int32Array,
+      envLen: t.loudness.envelope.length,
+      envSum: [...t.loudness.envelope].reduce((a, b) => a + b, 0),
+      envIsTyped: t.loudness.envelope instanceof Uint8Array,
+      score: t.quality.score,
+      artId: t.artId,
+      artHasBlobs: art.every((a) => a.full instanceof Blob && a.thumb instanceof Blob),
+      hashes: tracks.map((x) => x.hash).sort(),
+      audioBytes: audio?.blob?.size || 0,
+      playable: !!audio?.blob,
+    };
+  });
+
+  ok('the archive is a real file with bytes in it', restored.archiveBytes > 1000, `${restored.archiveBytes} B`);
+  ok('it is named for what it holds', /^offpress-library-\d{4}-\d{2}-\d{2}\.zip$/.test(restored.archiveName), restored.archiveName);
+  eq('inspecting it reads the manifest without unpacking', restored.manifestApp, 'offpress');
+  eq('the manifest counts every track', restored.manifestTracks, before.tracks);
+  eq('every track is restored', restored.res.added, before.tracks);
+  eq('nothing failed', restored.res.failed, []);
+  eq('the tracks are back', restored.tracks, before.tracks);
+  eq('with the same content hashes', restored.hashes, before.hashes);
+  eq('the albums are back', restored.albums, before.albums);
+  eq('the covers are back', restored.art, before.art);
+  ok('and they came back as real image blobs', restored.artHasBlobs);
+  eq('a track still points at its cover', restored.artId, before.artId);
+  ok('the audio came back', restored.playable && restored.audioBytes > 0, `${restored.audioBytes} B`);
+
+  // The measurements are the expensive part — a restore that loses them is a
+  // restore that makes you decode the whole library again.
+  eq('integrated loudness survives', restored.lufs, before.lufs);
+  eq('the quality score survives', restored.score, before.score);
+  eq('the loudness histogram survives intact', [restored.histLen, restored.histSum], [before.histLen, before.histSum]);
+  ok('and comes back as an Int32Array, not an object', restored.histIsTyped);
+  eq('the scrubber envelope survives intact', [restored.envLen, restored.envSum], [before.envLen, before.envSum]);
+  ok('and comes back as a Uint8Array', restored.envIsTyped);
+
+  // Custom track order is the one thing refreshAlbum cannot work out again.
+  eq('a hand-dragged album order survives', restored.order, before.order);
+  eq('and the album stays in custom mode', restored.sortMode, before.sortMode);
+
+  /* Merging the same archive back in must not duplicate anything. */
+  const merged = await page.evaluate(async () => {
+    const arc = await import('./js/archive.js');
+    const dbm = await import('./js/db.js');
+    const res = await arc.restoreLibrary(window.__backup, { mode: 'merge' });
+    return { res, tracks: (await dbm.getAll('tracks')).length };
+  });
+  eq('merging a backup you already have adds nothing', merged.res.added, 0);
+  eq('it skips them by content hash instead', merged.res.skipped, before.tracks);
+  eq('and the library does not grow', merged.tracks, before.tracks);
+
+  /* A measurements-only backup: small, and the rows come back waiting. */
+  const metaOnly = await page.evaluate(async () => {
+    const arc = await import('./js/archive.js');
+    const dbm = await import('./js/db.js');
+    const settings = await dbm.settings();
+    const { stream, name } = await arc.exportStream({ settings, includeAudio: false });
+    const blob = await new Response(stream).blob();
+    const file = new File([blob], name, { type: 'application/zip' });
+    await dbm.wipe();
+    const res = await arc.restoreLibrary(file, { mode: 'replace' });
+    const tracks = await dbm.getAll('tracks');
+    const t = tracks[0];
+    return {
+      name,
+      bytes: blob.size,
+      res,
+      waiting: tracks.filter((x) => x.needsAudio).length,
+      keptLoudness: t.loudness?.integratedLufs,
+      keptScore: t.quality?.score,
+      blob: !!(await dbm.get('blobs', t.id)),
+    };
+  });
+  ok('a measurements-only backup is named as such', /^offpress-metadata-/.test(metaOnly.name), metaOnly.name);
+  ok('and is far smaller than the full one', metaOnly.bytes < restored.archiveBytes / 2,
+    `${metaOnly.bytes} vs ${restored.archiveBytes}`);
+  eq('its tracks still restore', metaOnly.res.added, before.tracks);
+  eq('they are flagged as waiting for audio', metaOnly.waiting, before.tracks);
+  ok('no audio blob was invented for them', !metaOnly.blob);
+  eq('but every measurement came back', [metaOnly.keptLoudness, metaOnly.keptScore], [before.lufs, before.score]);
+
+  /* ...and re-importing the original files reattaches them to those rows. */
+  const reattached = await page.evaluate(async () => {
+    const lib = await import('./js/library.js');
+    const dbm = await import('./js/db.js');
+    const settings = await dbm.settings();
+    const idsBefore = (await dbm.getAll('tracks')).map((t) => t.id).sort();
+    const files = await window.__mk('Backup Test', ['01 one.wav', '02 two.wav']);
+    const res = await lib.importFiles(files, { settings });
+    const tracks = await dbm.getAll('tracks');
+    const t = tracks[0];
+    return {
+      res,
+      total: tracks.length,
+      sameIds: JSON.stringify(tracks.map((x) => x.id).sort()) === JSON.stringify(idsBefore),
+      stillWaiting: tracks.filter((x) => x.needsAudio).length,
+      playable: !!(await dbm.get('blobs', t.id)),
+      keptLoudness: t.loudness?.integratedLufs,
+    };
+  });
+  eq('re-importing the files reattaches rather than duplicating', reattached.res.reattached, before.tracks);
+  eq('nothing was added as new', reattached.res.added, 0);
+  eq('the library is still the same size', reattached.total, before.tracks);
+  ok('and the very same rows were filled in', reattached.sameIds);
+  eq('nothing is waiting any more', reattached.stillWaiting, 0);
+  ok('the audio is attached and playable', reattached.playable);
+  eq('the measurements were never re-derived', reattached.keptLoudness, before.lufs);
+
+  /* ================================================================
+     14. the report — arithmetic over what is already stored.
+     ================================================================ */
+
+  // The last few blocks wrote straight to IndexedDB, so the running app has a
+  // stale copy of the library. Reload so the report is reporting on what is
+  // actually there.
+  await page.goto(URL);
+  await bootWait();
+  await page.evaluate(MAKE_FILES);
+
+  const report = await page.evaluate(async () => {
+    document.querySelector('.tab[data-view="report"]').click();
+    await new Promise((r) => setTimeout(r, 150));
+    const view = document.querySelector('.view[data-view="report"]');
+    const body = document.querySelector('#report-body');
+    return {
+      tabExists: !!document.querySelector('.tab[data-view="report"]'),
+      viewActive: view.classList.contains('is-active'),
+      context: document.querySelector('#chrome-ctx').textContent,
+      panels: body.querySelectorAll('.panel').length,
+      stats: [...body.querySelectorAll('.quality-summary .stat .k')].map((e) => e.textContent.trim()),
+      firstStat: body.querySelector('.quality-summary .stat .v')?.textContent,
+      hasTierBar: !!body.querySelector('.rep-bar'),
+      // Panels are built into a container, so they still have to sit on the
+      // page gutter rather than against the window edge.
+      panelLeft: body.querySelector('.panel')?.getBoundingClientRect().left,
+      stageLeft: document.querySelector('.stage').getBoundingClientRect().left,
+      overflowsSideways: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    };
+  });
+  ok('the rail has a Report tab', report.tabExists);
+  ok('clicking it shows the report', report.viewActive);
+  eq('and names the view', report.context, 'Report');
+  ok('the report builds panels', report.panels >= 3, `${report.panels} panels`);
+  eq('the headline counts the library', report.firstStat, String(before.tracks));
+  ok('it leads with the totals', report.stats.includes('tracks') && report.stats.includes('records'),
+    report.stats.join(', '));
+  ok('and draws the tier bar', report.hasTierBar);
+  ok('its panels keep the page gutter', report.panelLeft > report.stageLeft + 20,
+    `panel at ${report.panelLeft}, stage at ${report.stageLeft}`);
+  ok('the report does not push the page sideways', !report.overflowsSideways);
+
+  // Every number on the report is a door into the list it came from.
+  const drill = await page.evaluate(async () => {
+    const item = document.querySelector('#report-body [data-report-act="track"]');
+    if (!item) return { skipped: true };
+    item.click();
+    await new Promise((r) => setTimeout(r, 200));
+    const dlg = document.querySelector('#dlg');
+    const open = dlg.open;
+    dlg.close();
+    return { skipped: false, open, id: item.dataset.id };
+  });
+  ok('clicking a track in the report opens its details', drill.skipped || drill.open, JSON.stringify(drill));
+
+  const empty = await page.evaluate(async () => {
+    const dbm = await import('./js/db.js');
+    await dbm.wipe();
+    return true;
+  });
+  void empty;
+  await page.goto(URL);
+  await bootWait();
+  await page.evaluate(MAKE_FILES);
+  const emptyReport = await page.evaluate(async () => {
+    document.querySelector('.tab[data-view="report"]').click();
+    await new Promise((r) => setTimeout(r, 150));
+    const body = document.querySelector('#report-body');
+    return { panels: body.querySelectorAll('.panel').length, text: body.textContent.trim().slice(0, 60) };
+  });
+  eq('an empty library reports nothing rather than zeroes', emptyReport.panels, 0);
+  ok('and says so in a sentence', emptyReport.text.length > 10, emptyReport.text);
+
+  /* ================================================================
+     15. linked folders — read in place, never copied, never deleted.
+     ================================================================ */
+
+  const link = await page.evaluate(async () => {
+    const src = await import('./js/source.js');
+
+    /* A stand-in for a FileSystemDirectoryHandle. scanFolder only ever asks a
+       handle for entries() and getFile(), so this exercises the real walk. */
+    const file = (name, bytes = 32) => ({
+      kind: 'file',
+      name,
+      getFile: async () => new File([new Uint8Array(bytes)], name, { type: '' }),
+    });
+    const dir = (name, children) => ({
+      kind: 'directory',
+      name,
+      queryPermission: async () => 'granted',
+      async* entries() { for (const c of children) yield [c.name, c]; },
+    });
+
+    const tree = dir('Music', [
+      file('cover.jpg'),
+      file('loose.flac'),
+      dir('Album A', [file('01.mp3'), file('02.mp3'), file('notes.txt')]),
+      dir('.hidden', [file('junk.mp3')]),
+      dir('__MACOSX', [file('._01.mp3')]),
+    ]);
+    const folder = { id: 'test-folder', name: 'Music', handle: tree };
+
+    const lib = await import('./js/library.js');
+    const found = await src.scanFolder(folder, { keep: lib.isAudioName });
+
+    const denied = { ...folder, handle: { ...tree, queryPermission: async () => 'prompt' } };
+    let permissionError = null;
+    try { await src.scanFolder(denied, { keep: lib.isAudioName }); }
+    catch (err) { permissionError = err.name; }
+
+    return {
+      canLink: src.canLink(),
+      paths: found.map((f) => f.linkPath).sort(),
+      relPaths: found.map((f) => f.relPath).sort(),
+      permissionError,
+      isLinkedStored: src.isLinked({ source: 'blob' }),
+      isLinkedFolder: src.isLinked({ source: 'folder' }),
+    };
+  });
+  eq('the walk finds audio at every depth, and only audio', link.paths,
+    ['Album A/01.mp3', 'Album A/02.mp3', 'loose.flac']);
+  ok('dot-directories and resource forks are skipped', !link.paths.some((p) => /hidden|MACOSX/.test(p)));
+  eq('the import path sees the folder as the top of each path', link.relPaths,
+    ['Music/Album A/01.mp3', 'Music/Album A/02.mp3', 'Music/loose.flac']);
+  eq('a folder without permission refuses to scan', link.permissionError, 'NeedsPermissionError');
+  ok('a stored track is not linked', !link.isLinkedStored);
+  ok('a folder track is', link.isLinkedFolder);
+
+  /* Deleting a linked track must remove the record and nothing else. */
+  const linkDelete = await page.evaluate(async () => {
+    const dbm = await import('./js/db.js');
+    const lib = await import('./js/library.js');
+    await dbm.wipe();
+    const settings = await dbm.settings();
+    const files = await window.__mk('Stored', ['01 kept.wav']);
+    await lib.importFiles(files, { settings });
+    const stored = (await dbm.getAll('tracks'))[0];
+
+    // A linked row, written directly: the picker cannot be driven from a test.
+    const linkedTrack = {
+      ...stored,
+      id: 'linked-1',
+      hash: 'linked-hash',
+      source: 'folder',
+      folderId: 'test-folder',
+      relPath: 'Album A/01.mp3',
+      size: 4_000_000,
+    };
+    await dbm.put('tracks', linkedTrack);
+
+    const st = await lib.stats(settings);
+    const res = await lib.deleteTracks(['linked-1', stored.id]);
+    return {
+      statsLinked: st.linked,
+      statsStoredBytes: st.storedBytes,
+      statsLinkedBytes: st.linkedBytes,
+      res,
+      left: (await dbm.getAll('tracks')).length,
+      blobLeft: !!(await dbm.get('blobs', stored.id)),
+    };
+  });
+  eq('stats count linked tracks apart', linkDelete.statsLinked, 1);
+  eq('linked bytes are not counted as stored', linkDelete.statsLinkedBytes, 4_000_000);
+  ok('stored bytes only count what is actually held', linkDelete.statsStoredBytes < 4_000_000,
+    String(linkDelete.statsStoredBytes));
+  eq('both rows are deleted', linkDelete.res.deleted, 2);
+  eq('but only one of them was holding audio here', linkDelete.res.linked, 1);
+  ok('and only that one freed any space', linkDelete.res.freed > 0 && linkDelete.res.freed < 4_000_000,
+    String(linkDelete.res.freed));
+  eq('the library is empty afterwards', linkDelete.left, 0);
+  ok('the stored blob really was removed', !linkDelete.blobLeft);
+
+  /* The Settings panel only exists where the browser can honour it. */
+  await page.goto(URL);
+  await bootWait();
+  await page.evaluate(MAKE_FILES);
+  const folderPanel = await page.evaluate(async () => {
+    document.querySelector('.tab[data-view="settings"]').click();
+    await new Promise((r) => setTimeout(r, 150));
+    const panel = document.querySelector('#folders-panel');
+    return {
+      canLink: typeof window.showDirectoryPicker === 'function',
+      hidden: panel.hidden,
+      hasBackup: !!document.querySelector('#btn-backup'),
+      hasRestore: !!document.querySelector('#btn-restore'),
+      estimate: document.querySelector('#backup-estimate')?.textContent || '',
+      emptyNote: document.querySelector('#folder-list')?.textContent.trim().slice(0, 40),
+    };
+  });
+  eq('the linked-folders panel follows browser support', folderPanel.hidden, !folderPanel.canLink);
+  ok('Settings offers a backup and a restore', folderPanel.hasBackup && folderPanel.hasRestore);
+  ok('and estimates the backup before you start it', /track/.test(folderPanel.estimate), folderPanel.estimate);
+  ok('with nothing linked it says so', !folderPanel.canLink || /No folders linked/.test(folderPanel.emptyNote),
+    folderPanel.emptyNote);
 
   console.log('\n--- console output from the page ---');
   page.dumpLogs();

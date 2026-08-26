@@ -2,10 +2,13 @@
 
 import * as db from './db.js';
 import * as lib from './library.js';
+import * as source from './source.js';
+import * as archive from './archive.js';
 import { Player } from './audio/player.js';
 import { artUrl, normalizeBackdrop } from './image.js';
 import { opusAvailable } from './audio/oggopus.js';
 import { isZip, expand } from './zip.js';
+import { computeReport, renderReport } from './report.js';
 import {
   $, $$, APP_VERSION, fmtTime, fmtBytes, fmtDb, escapeHtml, toast, debounce, sortBy,
 } from './util.js';
@@ -14,6 +17,8 @@ const state = {
   settings: null,
   tracks: [],
   albums: [],
+  folders: [],          // linked folders — empty everywhere but desktop Chromium
+  backupScope: 'full',  // full | meta
   view: 'tracks',
   filter: 'all',
   sort: 'addedAt',
@@ -116,14 +121,18 @@ async function boot() {
   registerSW();
   handleLaunchFiles();
   bindVersion();
+  updateBackupEstimate();
+  warnStaleFolders();
   $('#build-info').textContent =
     `Opus encoder: ${opusAvailable() ? 'available' : 'not available in this browser (WAV fallback)'} · ` +
-    `Analysis at 48 kHz · Storage: IndexedDB`;
+    `Analysis at 48 kHz · Storage: IndexedDB · ` +
+    `Folder links: ${source.canLink() ? 'supported' : 'not available in this browser'}`;
 }
 
 async function reload() {
   state.tracks = await lib.allTracks();
   state.albums = await lib.allAlbums();
+  state.folders = source.canLink() ? await source.allFolders() : [];
   renderAll();
 }
 
@@ -131,7 +140,9 @@ function renderAll() {
   renderTracks();
   renderAlbums();
   renderQuality();
+  renderReportView();
   renderRail();
+  renderFolders();
   updateStorageInfo();
 }
 
@@ -142,6 +153,9 @@ function renderRail() {
   $('#n-albums').textContent = state.albums.length;
   $('#n-tracks').textContent = state.tracks.length;
   $('#n-quality').textContent = outliers;
+  // The Report tab's count is what wants a human, not how many tracks there are.
+  $('#n-report').textContent = state.tracks.filter((t) =>
+    !t.analyzed || t.analyzeError || t.needsAudio || t.needsRelink).length;
   const bytes = state.tracks.reduce((a, t) => a + (t.size || 0), 0);
   $('#rail-cached').textContent = state.tracks.length ? `${state.tracks.length} trk · ${fmtBytes(bytes)}` : 'empty';
   $('#rail-out').textContent = s.codec === 'wav'
@@ -281,6 +295,7 @@ function bindUI() {
   $('#quality-list').addEventListener('click', onTrackListClick);
   $('#album-grid').addEventListener('click', onAlbumGridClick);
   $('#album-detail').addEventListener('click', onTrackListClick);
+  $('#report-body').addEventListener('click', onReportClick);
   $('#btn-album-back').addEventListener('click', () => openAlbum(null));
   $('#btn-normalize-quality').addEventListener('click', normalizeSelectedQuality);
   $('#btn-renorm-art').addEventListener('click', renormalizeArt);
@@ -318,6 +333,9 @@ function bindUI() {
  * menu that opens in the far corner is not an answer.
  */
 function bindAddMenu() {
+  // Linking needs the File System Access API, so the option only exists where it does.
+  if (source.canLink()) $$('.needs-link').forEach((el) => el.classList.remove('hidden'));
+
   for (const [btn, menu] of [['#btn-add-album', '#add-album-menu'], ['#btn-empty-album', '#empty-album-menu']]) {
     const m = $(menu);
     bindPopover($(btn), m);
@@ -325,6 +343,7 @@ function bindAddMenu() {
       const item = e.target.closest('.menu-item');
       if (!item) return;
       closeMenus();
+      if (item.dataset.source === 'link') { linkFolder(); return; }
       $(item.dataset.source === 'zip' ? '#zip-input' : '#dir-input').click();
     });
   }
@@ -357,7 +376,7 @@ function closeMenus() {
   $$('[aria-haspopup]').forEach((b) => b.setAttribute('aria-expanded', 'false'));
 }
 
-const VIEW_CTX = { tracks: 'Tracks', albums: 'Records', quality: 'Quality', settings: 'Settings' };
+const VIEW_CTX = { tracks: 'Tracks', albums: 'Records', quality: 'Quality', report: 'Report', settings: 'Settings' };
 
 function showView(view) {
   state.view = view;
@@ -367,7 +386,8 @@ function showView(view) {
     ? state.albums.find((a) => a.key === state.album)?.name
     : VIEW_CTX[view]);
   if (view === 'quality') renderQuality();
-  if (view === 'settings') updateStorageInfo();
+  if (view === 'report') renderReportView();
+  if (view === 'settings') { updateStorageInfo(); updateBackupEstimate(); }
   syncMeter();   // the hero meter only runs while its hero is on screen
 }
 
@@ -471,6 +491,7 @@ async function importFiles(files) {
     });
     await reload();
     const bits = [`${res.added} added`];
+    if (res.reattached) bits.push(`${res.reattached} reattached`);
     if (res.skipped) bits.push(`${res.skipped} already in library`);
     if (res.failed.length) bits.push(`${res.failed.length} failed`);
     toast(bits.join(' · '), res.failed.length ? 'err' : '');
@@ -514,6 +535,115 @@ async function readSharedFiles() {
     }
     return files;
   } catch { return []; }
+}
+
+/* ============================= linked folders ============================= */
+
+/** Pick a folder and pull what is in it into the library — by reference, not by
+ *  copy. The picker has to run inside the click that asked for it. */
+async function linkFolder() {
+  if (!source.canLink()) { toast('This browser cannot link folders', 'err'); return; }
+  let folder;
+  try {
+    folder = await source.pickFolder();
+  } catch (err) {
+    if (err?.name !== 'AbortError') toast(`Could not link that folder: ${err.message}`, 'err');
+    return;
+  }
+  await scanFolderInto(folder, `Linking ${folder.name}`);
+}
+
+async function scanFolderInto(folder, label) {
+  const ctrl = progressStart(label);
+  try {
+    const res = await lib.rescanFolder(folder, {
+      settings: state.settings,
+      signal: ctrl.signal,
+      onProgress: (done, total, sub) => ctrl.set(total ? done / total : 0, sub),
+    });
+    await reload();
+    const bits = [];
+    if (res.added) bits.push(`${res.added} added`);
+    if (res.reattached) bits.push(`${res.reattached} reattached`);
+    if (res.moved) bits.push(`${res.moved} moved`);
+    if (res.skipped) bits.push(`${res.skipped} already here`);
+    if (res.missing.length) bits.push(`${res.missing.length} no longer in the folder`);
+    toast(bits.length ? bits.join(' · ') : 'Nothing new in that folder');
+  } catch (err) {
+    toast(err instanceof source.NeedsPermissionError
+      ? 'That folder needs to be reconnected first'
+      : `Scan failed: ${err.message}`, 'err');
+  } finally { ctrl.done(); }
+}
+
+/** The Settings list of links, with whatever each one needs doing to it. */
+async function renderFolders() {
+  const panel = $('#folders-panel');
+  if (!panel) return;
+  // Nothing to say in a browser that cannot link, and nothing to hide either.
+  panel.hidden = !source.canLink();
+  if (panel.hidden) return;
+
+  const list = $('#folder-list');
+  if (!state.folders.length) {
+    list.innerHTML = '<p class="muted small">No folders linked. Everything in the library is stored in this browser.</p>';
+    return;
+  }
+  const rows = [];
+  for (const f of state.folders) {
+    const state_ = await source.permissionOf(f);
+    const n = state.tracks.filter((t) => t.folderId === f.id).length;
+    const bytes = state.tracks.filter((t) => t.folderId === f.id).reduce((a, t) => a + (t.size || 0), 0);
+    rows.push(`<div class="folder${state_ === 'granted' ? '' : ' is-stale'}" data-folder="${escapeHtml(f.id)}">
+      <div class="folder-main">
+        <b>${escapeHtml(f.name)}</b>
+        <span class="muted small">${n} track${n === 1 ? '' : 's'} · ${fmtBytes(bytes)} read in place${
+  f.lastScan ? ` · scanned ${new Date(f.lastScan).toLocaleDateString()}` : ''}</span>
+      </div>
+      <div class="folder-acts">
+        ${state_ === 'granted'
+    ? '<button class="btn ghost" data-folder-act="rescan">Rescan</button>'
+    : '<button class="btn primary" data-folder-act="reconnect">Reconnect</button>'}
+        <button class="btn ghost danger" data-folder-act="unlink">Unlink</button>
+      </div>
+    </div>`);
+  }
+  list.innerHTML = rows.join('');
+}
+
+async function onFolderListClick(e) {
+  const btn = e.target.closest('[data-folder-act]');
+  if (!btn) return;
+  const id = btn.closest('[data-folder]')?.dataset.folder;
+  const folder = state.folders.find((f) => f.id === id);
+  if (!folder) return;
+
+  if (btn.dataset.folderAct === 'reconnect') {
+    const got = await source.reconnect(folder);
+    source.forgetCache();
+    if (got === 'granted') { await reload(); toast(`"${folder.name}" reconnected`); }
+    else toast('The browser did not grant access to that folder', 'err');
+    return;
+  }
+  if (btn.dataset.folderAct === 'rescan') { await scanFolderInto(folder, `Rescanning ${folder.name}`); return; }
+  if (btn.dataset.folderAct === 'unlink') {
+    const n = state.tracks.filter((t) => t.folderId === folder.id).length;
+    if (!confirm(`Unlink "${folder.name}"?\n\n${n} track${n === 1 ? '' : 's'} will be removed from the library. `
+      + 'The folder and the files in it are not touched.')) return;
+    await lib.unlinkFolder(folder.id);
+    await reload();
+    toast(`Unlinked "${folder.name}"`);
+  }
+}
+
+/** A linked folder whose permission lapsed cannot play anything — say so once,
+ *  at boot, rather than one failed track at a time. */
+async function warnStaleFolders() {
+  if (!source.canLink() || !state.folders.length) return;
+  const stale = await source.foldersNeedingPermission();
+  if (stale.length) {
+    toast(`${stale.length} linked folder${stale.length === 1 ? '' : 's'} need reconnecting — see Settings`, 'err');
+  }
 }
 
 /* ============================== track rendering ============================ */
@@ -1210,6 +1340,33 @@ async function normalizeTracks(tracks) {
   } finally { ctrl.done(); }
 }
 
+/* ================================= report ================================= */
+
+/** The whole library, added up. Cheap enough to rebuild on every reload — it is
+ *  arithmetic over records that are already in memory. */
+function renderReportView() {
+  const box = $('#report-body');
+  if (!box) return;
+  box.innerHTML = renderReport(computeReport(state.tracks, state.albums, state.settings));
+}
+
+/** Every number on the report is a door into the list it came from. */
+function onReportClick(e) {
+  const btn = e.target.closest('[data-report-act]');
+  if (!btn) return;
+  const act = btn.dataset.reportAct;
+  if (act === 'track') { openTrackDialog(btn.dataset.id); return; }
+  if (act === 'album') {
+    openAlbum(btn.dataset.key);
+    showView('albums');
+    return;
+  }
+  if (act === 'filter') {
+    const chip = $(`#track-filters .chip[data-filter="${btn.dataset.filter}"]`);
+    if (chip) chip.click();   // the chip already knows to switch views and redraw
+  }
+}
+
 /* ================================ deletion ================================ */
 
 /**
@@ -1220,10 +1377,15 @@ async function normalizeTracks(tracks) {
 async function deleteTrackIds(ids, what) {
   if (!ids.length) return false;
   const picked = state.tracks.filter((t) => ids.includes(t.id));
-  const bytes = picked.reduce((a, t) => a + (t.size || 0), 0);
-  if (!confirm(`Delete ${what}?\n\n${picked.length} file${picked.length === 1 ? '' : 's'} · ${fmtBytes(bytes)} will be removed from this device. This cannot be undone.`)) {
-    return false;
-  }
+  const linked = picked.filter((t) => t.source === 'folder').length;
+  const bytes = picked.reduce((a, t) => a + (t.source === 'folder' ? 0 : t.size || 0), 0);
+  // Deleting a linked track removes a record, not a file. Saying "will be
+  // removed from this device" about someone's own music folder would be a lie.
+  const detail = linked === picked.length
+    ? `${picked.length} track${picked.length === 1 ? '' : 's'} will be removed from the library. The files stay in their linked folder.`
+    : `${picked.length} file${picked.length === 1 ? '' : 's'} · ${fmtBytes(bytes)} will be removed from this device. This cannot be undone.${
+      linked ? `\n\n${linked} of them are linked — those files stay in their folder.` : ''}`;
+  if (!confirm(`Delete ${what}?\n\n${detail}`)) return false;
 
   const ctrl = progressStart(`Deleting ${picked.length} track${picked.length === 1 ? '' : 's'}`);
   try {
@@ -1240,7 +1402,9 @@ async function deleteTrackIds(ids, what) {
     for (const id of ids) { state.picked.delete(id); state.selected.delete(id); state.knownOutliers.delete(id); }
 
     await reload();
-    toast(`Deleted ${res.deleted} track${res.deleted === 1 ? '' : 's'} · ${fmtBytes(res.bytes)} freed`);
+    toast(`Deleted ${res.deleted} track${res.deleted === 1 ? '' : 's'}${
+      res.freed ? ` · ${fmtBytes(res.freed)} freed` : ''}${
+      res.linked ? ` · ${res.linked} left in their folder` : ''}`);
     return true;
   } catch (err) {
     toast(`Delete failed: ${err.message}`, 'err');
@@ -1278,7 +1442,16 @@ async function loadCurrent() {
   const id = state.queue[state.qi];
   const track = state.tracks.find((t) => t.id === id);
   if (!track) return;
-  const blob = await lib.getBlob(id);
+  let blob;
+  try {
+    blob = await lib.getAudio(track);
+  } catch (err) {
+    // A linked folder that lapsed is fixable, and saying how is the whole point.
+    toast(err instanceof source.NeedsPermissionError
+      ? `${err.message} — Settings → Linked folders`
+      : err.message, 'err');
+    return;
+  }
   if (!blob) { toast('Audio data missing', 'err'); return; }
   const g = lib.gainFor(track, state.settings, albumOf(track));
   await player.load(track, blob, { gainDb: g.gainDb });
@@ -1667,6 +1840,18 @@ async function updatePlayerUI(track, gain) {
 
 /* ============================== track dialog ============================== */
 
+/** Where this track's audio actually is — the one thing the dialog could not
+ *  say before, and the thing that decides what deleting it means. */
+function sourceLabel(t) {
+  if (t.needsAudio) return '<span class="muted">restored without its audio — re-import the file to reattach it</span>';
+  if (t.needsRelink) return '<span class="muted">waiting for its folder to be linked again</span>';
+  if (t.source === 'folder') {
+    const folder = state.folders.find((f) => f.id === t.folderId);
+    return `linked · ${escapeHtml(folder?.name || 'folder')}/${escapeHtml(t.relPath || '')}`;
+  }
+  return `in this browser${t.hasOriginal ? ' · the original is kept alongside it' : ''}`;
+}
+
 async function openTrackDialog(id) {
   const t = state.tracks.find((x) => x.id === id);
   if (!t) return;
@@ -1695,6 +1880,7 @@ async function openTrackDialog(id) {
 
     <div class="kv">
       <div>File</div><div>${escapeHtml(t.fileName)} · ${fmtBytes(t.size)}</div>
+      <div>Stored</div><div>${sourceLabel(t)}</div>
       <div>Format</div><div>${escapeHtml(t.codec || '—')} in ${escapeHtml(t.container || '—')}${t.vbr ? ' (VBR)' : ''}</div>
       <div>Audio</div><div>${t.sampleRate ? `${(t.sampleRate / 1000).toFixed(1)} kHz` : '—'} · ${t.channels || '?'} ch${t.bits ? ` · ${t.bits}-bit` : ''} · ${q.bitrateKbps ? `${q.bitrateKbps} kbps` : '—'}</div>
       <div>Duration</div><div>${fmtTime(t.duration)}</div>
@@ -1715,7 +1901,7 @@ async function openTrackDialog(id) {
       <button class="btn" data-act="art">Set artwork</button>
       <button class="btn" data-act="analyze">Re-analyze</button>
       <button class="btn" data-act="normalize">Normalize quality</button>
-      ${t.hasOriginal ? '<button class="btn" data-act="restore">Restore original</button>' : ''}
+      ${lib.canRestore(t) ? '<button class="btn" data-act="restore">Restore original</button>' : ''}
       <button class="btn" data-act="download">Export file</button>
       <button class="btn danger" data-act="delete">Delete</button>
       <div class="grow"></div>
@@ -1748,7 +1934,7 @@ async function openTrackDialog(id) {
       return;
     }
     if (act === 'download') {
-      const blob = await lib.getBlob(t.id);
+      const blob = await lib.getAudio(t).catch((err) => { toast(err.message, 'err'); return null; });
       if (!blob) return;
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
@@ -1871,6 +2057,31 @@ function bindSettings() {
     updateStorageInfo();
   });
 
+  /* -- backup -- */
+  $('#set-backup-scope').addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-scope]');
+    if (!btn) return;
+    state.backupScope = btn.dataset.scope;
+    $$('#set-backup-scope button').forEach((b) => {
+      const on = b === btn;
+      b.classList.toggle('is-active', on);
+      b.setAttribute('aria-checked', String(on));
+    });
+    updateBackupEstimate();
+  });
+  $('#set-backup-originals').addEventListener('change', updateBackupEstimate);
+  $('#btn-backup').addEventListener('click', runBackup);
+  $('#btn-restore').addEventListener('click', () => $('#backup-input').click());
+  $('#backup-input').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (file) await openRestoreDialog(file);
+  });
+
+  /* -- linked folders -- */
+  $('#folder-list').addEventListener('click', onFolderListClick);
+  $('#btn-link-folder').addEventListener('click', linkFolder);
+
   $('#btn-export').addEventListener('click', async () => {
     const tracks = (await lib.allTracks()).map(({ loudness, ...t }) => ({
       ...t,
@@ -1889,12 +2100,119 @@ function bindSettings() {
   });
 
   $('#btn-wipe').addEventListener('click', async () => {
-    if (!confirm('Delete every track, cover and setting stored by this app?')) return;
+    if (!confirm('Delete every track, cover and folder link stored by this app?\n\n'
+      + 'Files inside a linked folder are not touched — only the link to them.')) return;
     stopPlayback();
     await db.wipe();
+    source.forgetCache();
     state.selected.clear();
     await reload();
     toast('Library deleted');
+  });
+}
+
+/* ============================ backup / restore ============================ */
+
+const backupOptions = () => ({
+  includeAudio: state.backupScope === 'full',
+  includeOriginals: $('#set-backup-originals')?.checked ?? true,
+});
+
+/** Say how big this is going to be *before* the file picker opens. It reads
+ *  every track and cover record to do it, so it only runs while the panel that
+ *  shows it is actually on screen — not on every library redraw. */
+async function updateBackupEstimate() {
+  const el = $('#backup-estimate');
+  if (!el || state.view !== 'settings') return;
+  try {
+    const est = await archive.estimate(backupOptions());
+    const parts = [`about ${fmtBytes(est.bytes)}`, `${est.tracks} track${est.tracks === 1 ? '' : 's'}`];
+    if (est.art) parts.push(`${est.art} cover${est.art === 1 ? '' : 's'}`);
+    if (est.linked) parts.push(`${est.linked} linked (recorded, not copied)`);
+    el.textContent = parts.join(' · ');
+  } catch { el.textContent = '—'; }
+}
+
+async function runBackup() {
+  if (!state.tracks.length) { toast('Nothing to back up yet'); return; }
+  const ctrl = progressStart('Writing backup');
+  try {
+    const res = await archive.exportLibrary({
+      ...backupOptions(),
+      settings: state.settings,
+      signal: ctrl.signal,
+      onProgress: (p, sub) => ctrl.set(p, sub),
+    });
+    toast(res.via === 'file'
+      ? `Backup written · ${res.entries} entries`
+      : `Backup downloaded as ${res.name}`);
+  } catch (err) {
+    if (err?.name === 'AbortError') toast('Backup cancelled');
+    else toast(`Backup failed: ${err.message}`, 'err');
+  } finally { ctrl.done(); }
+}
+
+/** Read the manifest, describe what is in the file, then ask how to bring it in. */
+async function openRestoreDialog(file) {
+  let manifest;
+  try {
+    ({ manifest } = await archive.inspect(file));
+  } catch (err) {
+    toast(err.message, 'err');
+    return;
+  }
+  const c = manifest.counts || {};
+  const when = manifest.exportedAt ? new Date(manifest.exportedAt).toLocaleString() : 'an unknown date';
+
+  formDialog({
+    title: 'Restore from backup',
+    hint: `${escapeHtml(file.name)} — ${c.tracks || 0} tracks, ${c.albums || 0} records, `
+      + `${c.art || 0} covers, written by v${escapeHtml(manifest.appVersion || '?')} on ${escapeHtml(when)}. `
+      + (manifest.includesAudio
+        ? 'This backup carries the audio.'
+        : 'This is a measurements-only backup — tracks come back without their audio and reattach when you re-import the files.'),
+    saveLabel: 'Restore',
+    fields: [
+      {
+        key: 'replace',
+        label: `Replace what is here (${state.tracks.length} track${state.tracks.length === 1 ? '' : 's'}) instead of merging into it`,
+        type: 'checkbox',
+        value: false,
+      },
+      { key: 'restoreSettings', label: 'Also restore the settings from the backup', type: 'checkbox', value: false },
+    ],
+    async onSave({ replace, restoreSettings }) {
+      if (replace && !confirm('Delete the current library first?\n\nEverything in it is removed before the backup is read. This cannot be undone.')) return;
+      const ctrl = progressStart('Restoring');
+      try {
+        if (replace) stopPlayback();
+        const res = await archive.restoreLibrary(file, {
+          mode: replace ? 'replace' : 'merge',
+          restoreSettings,
+          signal: ctrl.signal,
+          onProgress: (p, sub) => ctrl.set(p, sub),
+        });
+        if (restoreSettings) {
+          state.settings = await db.settings();
+          applyTheme();
+          applyBackdropImage();
+          applySettingsToUI();
+          player.setVolume(state.settings.volume);
+          player.setLimiter(state.settings.limiter);
+        }
+        await lib.refreshAllAlbums();
+        await reload();
+        const bits = [`${res.added} restored`];
+        if (res.skipped) bits.push(`${res.skipped} already here`);
+        if (res.missingAudio) bits.push(`${res.missingAudio} awaiting audio`);
+        if (res.relink) bits.push(`${res.relink} awaiting a folder link`);
+        if (res.failed.length) bits.push(`${res.failed.length} failed`);
+        toast(bits.join(' · '), res.failed.length ? 'err' : '');
+        if (res.failed.length) console.warn('Restore problems', res.failed);
+      } catch (err) {
+        toast(`Restore failed: ${err.message}`, 'err');
+      } finally { ctrl.done(); }
+    },
   });
 }
 
@@ -2004,7 +2322,12 @@ async function updateStorageInfo() {
     if (navigator.storage?.persisted) parts.push(await navigator.storage.persisted() ? 'persistent' : 'not persistent (the browser may evict data)');
   } catch { /* not supported */ }
   parts.push(`${state.tracks.length} tracks · ${state.albums.length} albums`);
+  const linked = state.tracks.filter((t) => t.source === 'folder');
+  if (linked.length) {
+    parts.push(`${linked.length} linked (${fmtBytes(linked.reduce((a, t) => a + (t.size || 0), 0))} read in place, not stored)`);
+  }
   el.textContent = parts.join(' · ');
+  updateBackupEstimate();
 }
 
 /* ================================ progress ================================ */

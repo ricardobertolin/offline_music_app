@@ -1,7 +1,7 @@
 /** IndexedDB layer. Audio blobs live in their own store so listing tracks stays cheap. */
 
 const NAME = 'offline-music';
-const VERSION = 2;
+const VERSION = 3;
 let dbp = null;
 
 export function open() {
@@ -24,6 +24,9 @@ export function open() {
       if (!art.indexNames.contains('hash')) art.createIndex('hash', 'hash');
       if (!db.objectStoreNames.contains('albums')) db.createObjectStore('albums', { keyPath: 'key' });
       if (!db.objectStoreNames.contains('settings')) db.createObjectStore('settings', { keyPath: 'k' });
+      // v3: linked folders. Holds a FileSystemDirectoryHandle, which structured
+      // clone can store but only Chromium can produce — see source.js.
+      if (!db.objectStoreNames.contains('folders')) db.createObjectStore('folders', { keyPath: 'id' });
     };
     req.onsuccess = () => {
       req.result.onversionchange = () => req.result.close();
@@ -74,9 +77,11 @@ export const byIndex = (store, index, value) =>
     ? Promise.resolve([])
     : run(store, 'readonly', (s) => wrap(s.index(index).getAll(value))));
 
-/** Whole-library reset (used by Settings → Delete everything). */
+/** Everything except settings — what a restore replaces, and what "Delete
+ *  everything" removes. Dropping `folders` only forgets the link; the files in
+ *  a linked folder are the user's and are never touched. */
 export async function wipe() {
-  for (const s of ['tracks', 'blobs', 'art', 'albums']) await clear(s);
+  for (const s of ['tracks', 'blobs', 'art', 'albums', 'folders']) await clear(s);
 }
 
 /* ---- settings ---- */
