@@ -1550,6 +1550,118 @@ try {
   ok('with nothing linked it says so', !folderPanel.canLink || /No folders linked/.test(folderPanel.emptyNote),
     folderPanel.emptyNote);
 
+  /* ================================================================
+     16. popovers on a phone: wide enough, on top, and on the screen.
+     ================================================================ */
+
+  await page.goto(URL);
+  await bootWait();
+  await page.evaluate(MAKE_FILES);
+  await page.evaluate(async () => {
+    const lib = await import('./js/library.js');
+    const dbm = await import('./js/db.js');
+    await dbm.wipe();
+    const settings = await dbm.settings();
+    await lib.importFiles(await window.__mk('Menu Record', ['01 a.wav', '02 b.wav']), { settings });
+  });
+  await page.goto(URL);
+  await bootWait();
+
+  for (const [w, h] of [[360, 640], [390, 844]]) {
+    await page.send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 3, mobile: true });
+
+    /* A menu hangs off a ~113px button. With the 270px minimum lifted at this
+       width it shrank to fit the button and became a column of wrapped words. */
+    const add = await page.evaluate(async () => {
+      document.querySelector('.tab[data-view="tracks"]').click();
+      await new Promise((r) => setTimeout(r, 150));
+      document.querySelector('#btn-add-album').click();
+      await new Promise((r) => setTimeout(r, 250));
+      const menu = document.querySelector('#add-album-menu');
+      const r = menu.getBoundingClientRect();
+      const de = document.documentElement;
+      const items = [...menu.querySelectorAll('.menu-item:not(.hidden)')];
+      const item = items[0];
+      const ir = item.getBoundingClientRect();
+      // Sample the *last* item. The rail sits directly under the header, so a
+      // menu trapped in the header's stacking context is covered from its middle
+      // down — the top of it still tests clean.
+      const lr = items[items.length - 1].getBoundingClientRect();
+      const hit = document.elementFromPoint(Math.round(lr.left + lr.width / 2), Math.round(lr.top + lr.height / 2));
+      return {
+        width: Math.round(r.width),
+        left: Math.round(r.left),
+        right: Math.round(r.right),
+        bottom: Math.round(r.bottom),
+        vw: de.clientWidth,
+        vh: de.clientHeight,
+        onTop: menu.contains(hit) || hit === menu,
+        hit: hit ? `${hit.tagName.toLowerCase()}.${String(hit.className).split(' ')[0]}` : 'none',
+        // A single item on one line, rather than three words stacked.
+        itemHeight: Math.round(ir.height),
+        docOverflow: de.scrollWidth - de.clientWidth,
+      };
+    });
+    ok(`[${w}] the add-album menu is a usable width`, add.width > add.vw * 0.8,
+      `${add.width} of ${add.vw}`);
+    ok(`[${w}] it sits inside the screen`, add.left >= 0 && add.right <= add.vw,
+      `${add.left}..${add.right}`);
+    ok(`[${w}] and paints above the rail below it`, add.onTop, `topmost was ${add.hit}`);
+    ok(`[${w}] its items are not squeezed into stacked words`, add.itemHeight < 90, `${add.itemHeight}px`);
+    ok(`[${w}] opening it does not scroll the page sideways`, add.docOverflow === 0, String(add.docOverflow));
+
+    /* The record's Configure menu is positioned against its row, so how far down
+       the page that row sits decides whether the last item is reachable. */
+    const cfg = await page.evaluate(async () => {
+      document.body.click();
+      document.querySelector('.tab[data-view="albums"]').click();
+      await new Promise((r) => setTimeout(r, 200));
+      document.querySelector('#album-grid .album')?.click();
+      await new Promise((r) => setTimeout(r, 300));
+      document.querySelector('#btn-album-config').click();
+      await new Promise((r) => setTimeout(r, 250));
+      const menu = document.querySelector('#album-config');
+      const r = menu.getBoundingClientRect();
+      const de = document.documentElement;
+      const last = menu.querySelector('.menu-item.danger');
+      return {
+        top: Math.round(r.top),
+        bottom: Math.round(r.bottom),
+        vh: de.clientHeight,
+        scrolls: menu.scrollHeight > menu.clientHeight + 1,
+        // Either it fits, or it scrolls inside itself to reach the last item.
+        lastReachable: !!last && (last.getBoundingClientRect().bottom <= de.clientHeight
+          || menu.scrollHeight > menu.clientHeight),
+        docOverflow: de.scrollWidth - de.clientWidth,
+      };
+    });
+    ok(`[${w}] Configure never runs past the bottom of the screen`, cfg.bottom <= cfg.vh,
+      `bottom ${cfg.bottom} in ${cfg.vh}`);
+    ok(`[${w}] its last item can still be reached`, cfg.lastReachable,
+      cfg.scrolls ? 'by scrolling the menu' : 'it fits');
+    ok(`[${w}] and it does not widen the page`, cfg.docOverflow === 0, String(cfg.docOverflow));
+
+    /* A <select> is as wide as its longest option unless told otherwise. */
+    const settingsFit = await page.evaluate(async () => {
+      document.body.click();
+      document.querySelector('.tab[data-view="settings"]').click();
+      await new Promise((r) => setTimeout(r, 250));
+      const de = document.documentElement;
+      const stage = document.querySelector('.stage');
+      const over = [];
+      for (const el of document.querySelectorAll('.view[data-view="settings"] *')) {
+        const r = el.getBoundingClientRect();
+        if (r.width && (r.right > de.clientWidth + 0.5 || r.left < -0.5)) {
+          over.push(el.id || el.tagName.toLowerCase());
+        }
+      }
+      return { over: over.slice(0, 5), stageOverflow: stage.scrollWidth - stage.clientWidth };
+    });
+    eq(`[${w}] nothing in Settings hangs off the side`, settingsFit.over, []);
+    eq(`[${w}] so the settings pane has nothing to scroll sideways`, settingsFit.stageOverflow, 0);
+  }
+  await page.send('Emulation.clearDeviceMetricsOverride', {});
+
   console.log('\n--- console output from the page ---');
   page.dumpLogs();
   console.log(fails ? `\n${fails} check(s) failed` : '\nall UI checks passed');

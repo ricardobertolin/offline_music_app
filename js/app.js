@@ -367,14 +367,30 @@ function bindPopover(btn, menu) {
     btn.setAttribute('aria-expanded', String(show));
     // Focus an item, never the order <select> — focusing a control inside the
     // hero scrolls it out of view the moment the menu opens.
-    if (show) menu.querySelector('.menu-item')?.focus();
+    if (show) { fitMenu(menu); menu.querySelector('.menu-item')?.focus(); }
   });
   // Clicks inside a menu must not reach the document closer.
   menu.addEventListener('click', (e) => e.stopPropagation());
 }
 
+/**
+ * Keep an opened menu on the screen.
+ *
+ * A menu is positioned against its row, not against the window, so where it
+ * lands depends on how far down the page that row happens to be — and on a
+ * phone the record's Configure menu opened with its last item, Delete record,
+ * 148 px below the fold. Where it ends up is a measured fact and CSS cannot see
+ * it, so cap the height here and let the menu scroll inside itself.
+ */
+function fitMenu(menu) {
+  menu.style.maxHeight = '';
+  const room = window.innerHeight - menu.getBoundingClientRect().top - 10;
+  if (menu.scrollHeight <= room) return;      // it already fits
+  menu.style.maxHeight = `${Math.max(160, Math.round(room))}px`;
+}
+
 function closeMenus() {
-  $$('.menu').forEach((m) => m.classList.add('hidden'));
+  $$('.menu').forEach((m) => { m.classList.add('hidden'); m.style.maxHeight = ''; });
   $$('[aria-haspopup]').forEach((b) => b.setAttribute('aria-expanded', 'false'));
 }
 

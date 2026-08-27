@@ -132,7 +132,12 @@ h1,h2,h3{margin:0}
 /* The window's wallpaper: it sits on the shell's flat ink and under every pane.
    Patterns are drawn from the accent; "image" shows the user's own picture. */
 .backdrop{position:absolute;inset:0;z-index:0;pointer-events:none;overflow:hidden}
-.chrome,.body,.transport{position:relative;z-index:1}
+/* The chrome sits above the body rather than beside it. Both used to be z-index:1,
+   and since .body comes later it won — which trapped every popover hanging off the
+   header inside .chrome's own stacking context, where no z-index on the menu could
+   lift it over the rail below. */
+.body,.transport{position:relative;z-index:1}
+.chrome{position:relative;z-index:3}
 html[data-backdrop=none] .backdrop{display:none}
 
 html[data-backdrop=grooves] .backdrop{
@@ -251,6 +256,10 @@ html[data-backdrop=image]{
   position:absolute;top:calc(100% + 8px);left:0;z-index:60;min-width:270px;
   background:var(--ink-4);border:1px solid var(--line-2);padding:6px 0;
   box-shadow:0 24px 60px rgba(0,0,0,.7);
+  /* fitMenu() sets max-height when a menu would run past the bottom of the
+     screen. Without contain, flicking past the end of the menu scrolls the page
+     underneath it instead. */
+  overflow-y:auto;overscroll-behavior:contain;
 }
 .menu.right{left:auto;right:0}
 /* Under a centred button — the empty state's, which sits mid-page. */
@@ -352,6 +361,10 @@ html[data-backdrop=image]{
    colour — leaving it transparent gets a white popup with white text on Windows. */
 select{
   background:var(--ink-4);color:var(--fg);
+  /* A select is as wide as its longest option unless it is told otherwise, and
+     "Opus in Ogg (small, best quality per byte)" ran the Settings pane off the
+     side of a 360px screen. */
+  max-width:100%;
   border:1px solid var(--line-2);border-radius:0;padding:6px 8px;
   font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;
 }
@@ -1099,6 +1112,21 @@ button.rep-chip:hover{border-color:var(--accent);color:var(--fg-hi)}
   /* Same reasoning for every other popover at this width: never wider than the
      screen it has to fit on. */
   .menu{min-width:0;max-width:calc(100vw - 28px)}
+
+  /* ...but lifting the 270px floor exposed the other half of that rule. An
+     absolutely positioned box with `right:0` (or a centred transform) shrinks to
+     fit only the space between its containing block and that edge, so a menu
+     hanging off a 113px button collapsed to 113px of wrapped, unreadable text.
+     Same cure as the hero: take the wrap out of the positioning chain so the
+     panel measures against a full-width row, and give it real insets. */
+  .chrome-actions .menu-wrap{position:static}
+  .chrome-actions .menu{
+    left:14px;right:14px;top:calc(100% + 6px);
+    width:auto;max-width:none;transform:none;
+  }
+  #tracks-empty{position:relative}
+  #tracks-empty .menu-wrap{position:static}
+  #tracks-empty .menu{left:14px;right:14px;width:auto;max-width:none;transform:none}
 }
 
 @media (max-width:600px){

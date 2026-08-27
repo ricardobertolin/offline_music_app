@@ -1,6 +1,6 @@
 {
   "name": "offline-music-app",
-  "version": "2.7.0",
+  "version": "2.7.1",
   "private": true,
   "description": "Offline PWA music library that normalizes loudness (EBU R128), audio quality and artwork on device.",
   "type": "module",
