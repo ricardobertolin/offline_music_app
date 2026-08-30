@@ -16,6 +16,62 @@
 </head>
 <body>
 
+<!-- Cover filters. CSS can grey a picture down but it cannot cut it to four ink
+     levels or shake it apart into dots, so the three that need real filtering
+     live here and are referenced by url(). Settings → Appearance picks one; the
+     stored artwork is never altered. app.js writes the duotone's two ink stops
+     from the accent colour. -->
+<svg class="filter-defs" width="0" height="0" aria-hidden="true" focusable="false">
+  <defs>
+    <!-- Four ink levels per channel: a screen-printed poster rather than a
+         photograph. The saturation is pushed up first, because quantizing a
+         half-desaturated picture bands into muddy greys with coloured seams
+         where the channels happen to step at different places. -->
+    <filter id="cover-posterize" color-interpolation-filters="sRGB">
+      <feColorMatrix type="saturate" values="1.4"/>
+      <feComponentTransfer>
+        <feFuncR type="discrete" tableValues="0 0.33 0.67 1"/>
+        <feFuncG type="discrete" tableValues="0 0.33 0.67 1"/>
+        <feFuncB type="discrete" tableValues="0 0.33 0.67 1"/>
+      </feComponentTransfer>
+    </filter>
+
+    <!-- One ink on paper: noise is added to the grey, then everything is cut to
+         black or white against it, which is what dithering is. Without the noise
+         the same cut is a hard two-tone threshold and loses every gradient. -->
+    <filter id="cover-dither" color-interpolation-filters="sRGB">
+      <feColorMatrix type="saturate" values="0" result="grey"/>
+      <!-- Lifted before the cut: album art is mostly dark, and against a 0.5
+           threshold an unlifted picture goes to a black square with a hole in it. -->
+      <feComponentTransfer in="grey" result="lifted">
+        <feFuncR type="linear" slope="1.1" intercept="0.12"/>
+        <feFuncG type="linear" slope="1.1" intercept="0.12"/>
+        <feFuncB type="linear" slope="1.1" intercept="0.12"/>
+      </feComponentTransfer>
+      <feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="1" seed="11" result="noise"/>
+      <feColorMatrix in="noise" type="matrix" result="mono-noise"
+        values="0.33 0.33 0.33 0 0  0.33 0.33 0.33 0 0  0.33 0.33 0.33 0 0  0 0 0 0 1"/>
+      <feComposite in="lifted" in2="mono-noise" operator="arithmetic" k1="0" k2="1" k3="0.36" k4="-0.18" result="mixed"/>
+      <feComponentTransfer in="mixed">
+        <feFuncR type="discrete" tableValues="0 1"/>
+        <feFuncG type="discrete" tableValues="0 1"/>
+        <feFuncB type="discrete" tableValues="0 1"/>
+      </feComponentTransfer>
+    </filter>
+
+    <!-- Two inks: the page's black through to the accent. The table values are
+         rewritten by applyTheme() whenever the accent changes. -->
+    <filter id="cover-duotone" color-interpolation-filters="sRGB">
+      <feColorMatrix type="saturate" values="0"/>
+      <feComponentTransfer id="cover-duotone-ramp">
+        <feFuncR type="table" tableValues="0.04 1"/>
+        <feFuncG type="table" tableValues="0.04 1"/>
+        <feFuncB type="table" tableValues="0.05 1"/>
+      </feComponentTransfer>
+    </filter>
+  </defs>
+</svg>
+
 <div class="shell">
 
 <div class="backdrop" id="backdrop" aria-hidden="true">
@@ -214,6 +270,14 @@
           <label for="set-haze">Grain <span class="muted" id="set-haze-val"></span></label>
           <input id="set-haze" type="range" min="0" max="0.25" step="0.01">
           <p class="hint">Printed-paper noise over covers and record heroes.</p>
+        </div>
+        <div class="field">
+          <label>Cover filter</label>
+          <div class="segmented" id="set-cover-filter" role="radiogroup" aria-label="Cover filter"></div>
+          <p class="hint">A print treatment over every cover — the grid, the record hero, the
+          track rows and the transport. <b>Duotone</b> prints them in your accent colour.
+          Only how they are shown: the stored picture is never changed, so switching back
+          costs nothing.</p>
         </div>
         <label class="switch"><input id="set-tint" type="checkbox"><span>Tint records without a cover</span></label>
         <label class="switch"><input id="set-spin" type="checkbox"><span>Spin the press while playing</span></label>

@@ -834,19 +834,63 @@ try {
     await new Promise((r) => setTimeout(r, 150));
     document.querySelector('[data-act="edit"]').click();
     await new Promise((r) => setTimeout(r, 150));
-    const before = document.querySelector('#f-artist').value;
-    document.querySelector('#f-artist').value = 'New Artist';
+    const rows = () => [...document.querySelectorAll('#f-artists .artist-row input')];
+    const before = rows()[0].value;
+    const oneRow = rows().length;
+    rows()[0].value = 'New Artist';
     document.querySelector('[data-act="save"]').click();
     await new Promise((r) => setTimeout(r, 900));
     const dbm = await import('./js/db.js');
     const t = await dbm.get('tracks', ${JSON.stringify(ids[0])});
     const others = (await dbm.getAll('tracks')).filter((x) => x.id !== ${JSON.stringify(ids[0])});
-    return { before, artist: t.artist, album: t.album, title: t.title, othersUnchanged: others.every((x) => x.artist === 'Old Artist') };
+    return { before, oneRow, artist: t.artist, artists: t.artists, album: t.album, title: t.title, othersUnchanged: others.every((x) => x.artist === 'Old Artist') };
   })()`);
   eq('the edit dialog pre-fills the current artist', oneEdit.before, 'Old Artist');
+  eq('a single-artist track opens with one row', oneEdit.oneRow, 1);
   eq('editing one track changes its artist', oneEdit.artist, 'New Artist');
+  eq('and the stored list follows the display string', oneEdit.artists, ['New Artist']);
   eq('and leaves its other tags alone', [oneEdit.album, oneEdit.title], ['The Record', 'Song 1']);
   ok('other tracks are untouched', oneEdit.othersUnchanged);
+
+  /* (a2) a collaboration. Adding a guest to one track of a record used to file it
+     under "Old Artist, Guest" and split a second, one-track album off the record
+     it belongs to — which is the thing this is here to stop happening. */
+  ids = await seed();
+  await page.goto(URL);
+  await bootWait();
+  const collab = await page.evaluate(`(async () => {
+    document.querySelector('[data-menu="${ids[0]}"]').click();
+    await new Promise((r) => setTimeout(r, 150));
+    document.querySelector('[data-act="edit"]').click();
+    await new Promise((r) => setTimeout(r, 150));
+    document.querySelector('[data-act="add-artist"]').click();
+    await new Promise((r) => setTimeout(r, 100));
+    const rows = [...document.querySelectorAll('#f-artists .artist-row input')];
+    const addedRow = rows.length;
+    // The first row is the one the record is filed under, so it cannot be dropped.
+    const drops = document.querySelectorAll('#f-artists [data-act="drop-artist"]').length;
+    rows[1].value = 'Guest Star';
+    document.querySelector('[data-act="save"]').click();
+    await new Promise((r) => setTimeout(r, 900));
+    const dbm = await import('./js/db.js');
+    const t = await dbm.get('tracks', ${JSON.stringify(ids[0])});
+    const albums = await dbm.getAll('albums');
+    return {
+      addedRow, drops,
+      artist: t.artist,
+      artists: t.artists,
+      albumKeys: [...new Set((await dbm.getAll('tracks')).map((x) => x.albumKey))],
+      albums: albums.map((a) => ({ name: a.name, artist: a.artist, count: a.trackCount })),
+      shownOnRow: document.querySelector('.track[data-id="' + ${JSON.stringify(ids[0])} + '"] .t2')?.textContent.trim(),
+    };
+  })()`);
+  eq('Add artist appends a row', collab.addedRow, 2);
+  eq('only the guest row can be removed', collab.drops, 1);
+  eq('both artists are credited', collab.artists, ['Old Artist', 'Guest Star']);
+  eq('and the row shows both', collab.shownOnRow, 'Old Artist, Guest Star');
+  eq('the track stays on the one record', collab.albumKeys.length, 1);
+  eq('which is still filed under the first artist', collab.albums,
+    [{ name: 'The Record', artist: 'Old Artist', count: 3 }]);
 
   // (b) album artist, with and without pushing it down to track artists
   ids = await seed();
@@ -1661,6 +1705,171 @@ try {
     eq(`[${w}] so the settings pane has nothing to scroll sideways`, settingsFit.stageOverflow, 0);
   }
   await page.send('Emulation.clearDeviceMetricsOverride', {});
+
+  /* ================================================================
+     17. right-click menus, the cover that is not a button, and the
+         cover filter.
+     ================================================================ */
+
+  await page.send('Emulation.clearDeviceMetricsOverride', {});
+  await page.goto(URL);
+  await bootWait();
+  await page.evaluate(MAKE_FILES);
+  await page.evaluate(async () => {
+    const lib = await import('./js/library.js');
+    const dbm = await import('./js/db.js');
+    await dbm.wipe();
+    const settings = await dbm.settings();
+    await lib.importFiles(await window.__mk('Ctx Record', ['01 a.wav', '02 b.wav']), { settings });
+  });
+  await page.goto(URL);
+  await bootWait();
+
+  // Page-side helper: a right-click at a point, reporting whether the browser's
+  // own menu was suppressed and what ours ended up offering.
+  const CTX = `
+  window.__ctx = (el, x, y) => {
+    const ev = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 2 });
+    const prevented = !el.dispatchEvent(ev);
+    const menu = document.querySelector('#ctx-menu');
+    const open = !!menu && !menu.classList.contains('hidden');
+    return {
+      prevented,
+      open,
+      items: open ? [...menu.querySelectorAll('.menu-item b')].map((b) => b.textContent.trim()) : [],
+      rect: open ? menu.getBoundingClientRect().toJSON() : null,
+    };
+  };`;
+  await page.evaluate(CTX);
+
+  const ctx = await page.evaluate(async () => {
+    const out = {};
+    const row = document.querySelector('#track-list .track');
+    const r = row.getBoundingClientRect();
+    out.track = window.__ctx(row, Math.round(r.left + 20), Math.round(r.top + 10));
+    document.body.click();
+    await new Promise((rr) => setTimeout(rr, 100));
+
+    document.querySelector('.tab[data-view="albums"]').click();
+    await new Promise((rr) => setTimeout(rr, 250));
+    const card = document.querySelector('#album-grid .album');
+    const cr = card.getBoundingClientRect();
+    out.album = window.__ctx(card, Math.round(cr.left + 10), Math.round(cr.top + 10));
+    document.body.click();
+    await new Promise((rr) => setTimeout(rr, 100));
+
+    // Nothing in particular under the pointer: the app's own menu, not the page's.
+    out.app = window.__ctx(document.querySelector('.stage-head'), 200, 200);
+    document.body.click();
+    await new Promise((rr) => setTimeout(rr, 100));
+
+    // A text field keeps the native menu — cut/copy/paste lives nowhere else.
+    out.field = window.__ctx(document.querySelector('#search'), 300, 30);
+    document.body.click();
+    return out;
+  });
+  ok('right-clicking a track suppresses the browser menu', ctx.track.prevented);
+  ok('and opens the app’s own', ctx.track.open);
+  ok('with the track’s actions on it', ['Play', 'Edit details…', 'Set artwork…', 'Delete track']
+    .every((label) => ctx.track.items.includes(label)), ctx.track.items.join(' · '));
+  ok('right-clicking a record offers the record’s actions',
+    ctx.album.open && ctx.album.items.includes('Delete record'), ctx.album.items.join(' · '));
+  ok('right-clicking the window itself offers the app’s',
+    ctx.app.open && ctx.app.items.includes('Reload the app'), ctx.app.items.join(' · '));
+  ok('a text field keeps the browser menu', !ctx.field.prevented && !ctx.field.open);
+
+  // Opened at the far corner it has to come back onto the screen, not run off it.
+  const ctxEdge = await page.evaluate(async () => {
+    document.querySelector('.tab[data-view="tracks"]').click();
+    await new Promise((r) => setTimeout(r, 200));
+    const row = document.querySelector('#track-list .track');
+    const de = document.documentElement;
+    const res = window.__ctx(row, de.clientWidth - 4, de.clientHeight - 4);
+    const out = {
+      right: Math.round(res.rect.right), bottom: Math.round(res.rect.bottom),
+      vw: de.clientWidth, vh: de.clientHeight,
+    };
+    // And it does what it says: Details… opens the details dialog.
+    [...document.querySelectorAll('#ctx-menu .menu-item')]
+      .find((b) => b.querySelector('b').textContent.trim() === 'Details…').click();
+    await new Promise((r) => setTimeout(r, 400));
+    out.dialogOpen = document.querySelector('#dlg').open;
+    out.menuClosed = document.querySelector('#ctx-menu').classList.contains('hidden');
+    document.querySelector('#dlg').close();
+    return out;
+  });
+  ok('the menu stays inside the window at the far corner',
+    ctxEdge.right <= ctxEdge.vw && ctxEdge.bottom <= ctxEdge.vh,
+    `${ctxEdge.right}x${ctxEdge.bottom} in ${ctxEdge.vw}x${ctxEdge.vh}`);
+  ok('choosing an item runs it and closes the menu', ctxEdge.dialogOpen && ctxEdge.menuClosed);
+
+  /* The 40px cover in a track row played the file for everyone who hit it while
+     scrolling — it opened a file picker instead. It is part of the row now. */
+  const tileClick = await page.evaluate(async () => {
+    const row = document.querySelector('#track-list .track');
+    const tile = row.querySelector('.tile');
+    document.querySelector('#img-input').onchange = null;
+    tile.click();
+    await new Promise((r) => setTimeout(r, 700));
+    return {
+      isButton: tile.tagName === 'BUTTON',
+      title: tile.getAttribute('title'),
+      pickerArmed: !!document.querySelector('#img-input').onchange,
+      playing: !document.querySelector('#player').hidden,
+    };
+  });
+  ok('the row cover is not a picker', !tileClick.isButton && !tileClick.title);
+  ok('clicking it does not arm the artwork picker', !tileClick.pickerArmed);
+  ok('it plays the row like the rest of the row', tileClick.playing);
+
+  /* The cover filter is display-only: one attribute on <html>, and the stored
+     artwork is untouched by it. */
+  const filt = await page.evaluate(async () => {
+    document.querySelector('.tab[data-view="settings"]').click();
+    await new Promise((r) => setTimeout(r, 200));
+    const box = document.querySelector('#set-cover-filter');
+    const labels = [...box.querySelectorAll('button')].map((b) => b.textContent.trim());
+    box.querySelector('[data-cover-filter="dither"]').click();
+    await new Promise((r) => setTimeout(r, 250));
+    const de = document.documentElement;
+    const dbm = await import('./js/db.js');
+    const settings = await dbm.settings();
+    document.querySelector('.tab[data-view="albums"]').click();
+    await new Promise((r) => setTimeout(r, 250));
+    const img = document.querySelector('#album-grid .tile img');
+    return {
+      labels,
+      attr: de.dataset.coverFilter,
+      stored: settings.coverFilter,
+      applied: img ? getComputedStyle(img).filter : 'no cover to filter',
+      marked: box.querySelector('[data-cover-filter="dither"]').classList.contains('is-active'),
+    };
+  });
+  ok('Settings offers a cover filter', filt.labels.includes('Dither') && filt.labels.includes('B&W'),
+    filt.labels.join(' · '));
+  eq('picking one writes it to the document', filt.attr, 'dither');
+  eq('and persists it', filt.stored, 'dither');
+  ok('the chosen one is marked', filt.marked);
+  ok('and it reaches the covers', /url\(|grayscale/.test(filt.applied), filt.applied);
+
+  await page.goto(URL);
+  await bootWait();
+  const filtBack = await page.evaluate(async () => {
+    // It has to come back with the app, then Off has to undo it.
+    const kept = document.documentElement.dataset.coverFilter;
+    document.querySelector('.tab[data-view="settings"]').click();
+    await new Promise((r) => setTimeout(r, 200));
+    document.querySelector('#set-cover-filter [data-cover-filter="none"]').click();
+    await new Promise((r) => setTimeout(r, 250));
+    const dbm = await import('./js/db.js');
+    return {
+      kept,
+      attr: document.documentElement.dataset.coverFilter,
+      stored: (await dbm.settings()).coverFilter,
+    };
+  });
+  eq('it is still there after a reload', filtBack.kept, 'dither');
+  eq('and Off puts the covers back', [filtBack.attr, filtBack.stored], ['none', 'none']);
 
   console.log('\n--- console output from the page ---');
   page.dumpLogs();

@@ -11,7 +11,7 @@ import { isZip, expand } from './zip.js';
 import { saveStream } from './zipwrite.js';
 import { computeReport, renderReport } from './report.js';
 import {
-  $, $$, APP_VERSION, fmtTime, fmtBytes, fmtDb, escapeHtml, toast, debounce, sortBy,
+  $, $$, APP_VERSION, fmtTime, fmtBytes, fmtDb, escapeHtml, toast, debounce, sortBy, artistsOf,
 } from './util.js';
 
 const state = {
@@ -61,9 +61,26 @@ function applyTheme() {
   // whole switch is one attribute rather than a pile of inline styles.
   el.dataset.backdrop = s.backdrop || 'none';
   el.dataset.backdropMono = s.backdropMono ? 'on' : 'off';
+  el.dataset.coverFilter = s.coverFilter || 'none';
+  applyDuotone(s.accent);
   // Phones default to the title alone; the columns are one attribute away.
   el.dataset.cols = s.phoneColumns ? 'all' : 'name';
   setSpin(player.playing);
+}
+
+/**
+ * The duotone cover filter prints from the page's ink up to the accent, so its
+ * ramp has to be rewritten every time the accent is. The SVG lives in the
+ * document (index.html) because a CSS filter cannot do two-tone.
+ */
+function applyDuotone(hex) {
+  const ramp = document.getElementById('cover-duotone-ramp');
+  if (!ramp) return;
+  const n = parseInt(String(hex).slice(1), 16);
+  const rgb = isFinite(n) ? [(n >> 16) & 255, (n >> 8) & 255, n & 255] : [255, 255, 255];
+  const ink = [0.04, 0.04, 0.05];   // --ink-0, so the shadows sit on the page
+  [...ramp.children].forEach((fn, i) =>
+    fn.setAttribute('tableValues', `${ink[i]} ${(rgb[i] / 255).toFixed(3)}`));
 }
 
 /** The object URL for the stored backdrop, revoked whenever it is replaced. */
@@ -306,6 +323,16 @@ function bindUI() {
   bindSettings();
   bindDropZone();
 
+  document.addEventListener('contextmenu', onContextMenu);
+  // A menu pinned to viewport coordinates has to go when what is under it moves.
+  // Only that menu: the popovers travel with the button they hang off, and a
+  // scroll is exactly what opening one on a phone causes.
+  // Capture, because the scrolling element is the stage, not the window.
+  const closeCtxMenu = () => { if (ctxMenu && !ctxMenu.classList.contains('hidden')) closeMenus(); };
+  window.addEventListener('scroll', closeCtxMenu, true);
+  window.addEventListener('resize', closeCtxMenu);
+  window.addEventListener('blur', closeCtxMenu);
+
   // Crossing the 860px fold hides or shows the hero meter, so the loop has to
   // follow the layout.
   window.addEventListener('resize', debounce(syncMeter, 200));
@@ -392,6 +419,149 @@ function fitMenu(menu) {
 function closeMenus() {
   $$('.menu').forEach((m) => { m.classList.add('hidden'); m.style.maxHeight = ''; });
   $$('[aria-haspopup]').forEach((b) => b.setAttribute('aria-expanded', 'false'));
+}
+
+/* ============================== context menu ============================== */
+
+/* Right-clicking a track used to offer Back, Reload and View source — the
+   browser's menu, about the page, in an app that is not a page. What follows
+   replaces it with the actions that belong to whatever was actually clicked:
+   the track, the record, or the app. The native menu is left alone in text
+   fields, where cut/copy/paste is the only way to do the job. */
+
+/** The one menu element, built on first use and reused for every open. */
+let ctxMenu = null;
+/** What the items of the currently open menu do, by index. */
+let ctxActions = [];
+
+function ctxMenuEl() {
+  if (ctxMenu) return ctxMenu;
+  ctxMenu = document.createElement('div');
+  ctxMenu.id = 'ctx-menu';
+  ctxMenu.className = 'menu ctx hidden';
+  ctxMenu.setAttribute('role', 'menu');
+  ctxMenu.addEventListener('click', (e) => {
+    e.stopPropagation();          // the document closer runs on any other click
+    const item = e.target.closest('.menu-item');
+    if (!item) return;
+    const run = ctxActions[+item.dataset.i];
+    closeMenus();
+    run?.();
+  });
+  document.body.appendChild(ctxMenu);
+  return ctxMenu;
+}
+
+/**
+ * @param {number} x @param {number} y viewport coordinates of the pointer
+ * @param {Array<'-'|{label:string, sub?:string, danger?:boolean, run:Function}>} items
+ */
+function openContextMenu(x, y, items) {
+  const menu = ctxMenuEl();
+  ctxActions = [];
+  menu.innerHTML = items.filter(Boolean).map((it) => {
+    if (it === '-') return '<div class="menu-sep"></div>';
+    ctxActions.push(it.run);
+    return `<button class="menu-item${it.danger ? ' danger' : ''}" role="menuitem" data-i="${ctxActions.length - 1}">
+      <b>${escapeHtml(it.label)}</b>${it.sub ? `<span>${escapeHtml(it.sub)}</span>` : ''}</button>`;
+  }).join('');
+
+  closeMenus();
+  menu.style.maxHeight = '';
+  menu.style.left = '0px';
+  menu.style.top = '0px';
+  menu.classList.remove('hidden');
+  // Measured, then pulled back inside the window: a right-click near the right
+  // edge or the bottom of the screen is the normal case, not the exception.
+  const box = menu.getBoundingClientRect();
+  menu.style.left = `${Math.round(Math.max(6, Math.min(x, window.innerWidth - box.width - 6)))}px`;
+  menu.style.top = `${Math.round(Math.max(6, Math.min(y, window.innerHeight - box.height - 6)))}px`;
+  fitMenu(menu);
+  menu.querySelector('.menu-item')?.focus();
+}
+
+function trackMenuItems(id) {
+  const t = state.tracks.find((x) => x.id === id);
+  if (!t) return [];
+  return [
+    { label: 'Play', sub: 'And queue what follows it', run: () => playTrack(t.id, queueAround(t.id)) },
+    { label: 'Details…', sub: 'Loudness, quality, where it is stored', run: () => openTrackDialog(t.id) },
+    '-',
+    { label: 'Edit details…', sub: 'Title, artists, album', run: () => openTrackEditDialog(t) },
+    { label: 'Set artwork…', sub: 'Center-cropped and normalized', run: () => pickArtFor({ trackId: t.id }) },
+    { label: 'Re-analyze', sub: 'Measure loudness and quality again', run: () => reanalyzeTrack(t) },
+    { label: 'Normalize quality', sub: 'Re-encode to the target profile', run: () => normalizeTracks([t]) },
+    { label: 'Send…', sub: 'Share or save a copy of the file', run: () => sendTracks([t.id], t.title) },
+    '-',
+    { label: 'Delete track', danger: true, sub: 'Removes it from the library', run: () => deleteTrackIds([t.id], `"${t.title}"`) },
+  ];
+}
+
+/** The list a track should play in the round of: the one it is shown in. */
+function queueAround(id) {
+  const row = $(`.track[data-id="${id}"]`);
+  return row ? visibleContextFor(row) : visibleTracks().map((t) => t.id);
+}
+
+function albumMenuItems(key) {
+  const album = state.albums.find((a) => a.key === key);
+  if (!album) return [];
+  const ids = () => lib.sortAlbumTracks(state.tracks.filter((t) => t.albumKey === key), album).map((t) => t.id);
+  return [
+    ...(state.album === key ? [] : [{ label: 'Open record', sub: `${album.trackCount} track${album.trackCount === 1 ? '' : 's'}`, run: () => { showView('albums'); openAlbum(key); } }]),
+    { label: 'Play', run: () => { const q = ids(); if (q.length) playTrack(q[0], q); } },
+    { label: 'Shuffle', run: () => { const q = ids(); if (q.length) playTrack(q[Math.floor(Math.random() * q.length)], q, { shuffle: true }); } },
+    '-',
+    { label: 'Edit name & artist…', sub: `Applies to all ${album.trackCount} track${album.trackCount === 1 ? '' : 's'}`, run: () => openAlbumEditDialog(album) },
+    { label: 'Set cover…', sub: 'Center-cropped and normalized', run: () => pickArtFor({ albumKey: key }) },
+    { label: 'Send this record…', sub: 'A .zip carrying the audio and every measurement', run: () => sendTracks(ids(), album.name) },
+    '-',
+    { label: 'Delete record', danger: true, sub: 'Its tracks, audio and orphaned covers', run: () => deleteAlbumByKey(key) },
+  ];
+}
+
+/** Right-clicking the window itself: what the app can do, rather than what the
+ *  browser can do to the page it is drawn on. */
+function appMenuItems() {
+  const playing = !!player.track;
+  return [
+    playing && { label: player.playing ? 'Pause' : 'Play', sub: player.track.title, run: () => player.toggle() },
+    playing && { label: 'Next track', run: () => playNext(1) },
+    playing && { label: 'Previous track', run: () => playNext(-1) },
+    playing && '-',
+    { label: 'Records', run: () => { if (state.album) openAlbum(null); showView('albums'); } },
+    { label: 'Tracks', run: () => showView('tracks') },
+    { label: 'Settings', run: () => showView('settings') },
+    '-',
+    { label: 'Add album…', sub: 'From a folder or a .zip', run: () => $('#btn-add-album').click() },
+    { label: 'Add tracks…', run: () => $('#file-input').click() },
+    '-',
+    { label: 'Reload the app', sub: 'Everything stays where it is', run: () => location.reload() },
+  ].filter(Boolean);
+}
+
+function onContextMenu(e) {
+  // Text fields keep the native menu: cut, copy and paste live nowhere else.
+  if (e.target.closest('input,textarea,select,[contenteditable=""],[contenteditable=true]')) return;
+  e.preventDefault();
+  // An open dialog is already a list of what can be done here.
+  if (e.target.closest('dialog')) return;
+
+  const row = e.target.closest('.track');
+  if (row) { openContextMenu(e.clientX, e.clientY, trackMenuItems(row.dataset.id)); return; }
+  const card = e.target.closest('.album[data-key]');
+  if (card) { openContextMenu(e.clientX, e.clientY, albumMenuItems(card.dataset.key)); return; }
+  // Anywhere on an open record that is not one of its rows is the record itself.
+  if (state.album && e.target.closest('#album-detail')) {
+    openContextMenu(e.clientX, e.clientY, albumMenuItems(state.album));
+    return;
+  }
+  // The transport and the phone's Now-playing screen stand for what is playing.
+  if (player.track && e.target.closest('#player,#now')) {
+    openContextMenu(e.clientX, e.clientY, trackMenuItems(player.track.id));
+    return;
+  }
+  openContextMenu(e.clientX, e.clientY, appMenuItems());
 }
 
 const VIEW_CTX = { tracks: 'Tracks', albums: 'Records', quality: 'Quality', report: 'Report', settings: 'Settings' };
@@ -744,7 +914,11 @@ function trackRow(t, { compact = false, checkbox = false, draggable = false, pic
 
   const face = checkbox
     ? `<input type="checkbox" class="sel" data-id="${t.id}"${picked ? ' checked' : ''} aria-label="Select ${escapeHtml(t.title)}">`
-    : `<div class="tile" style="--cover:${tintOf(t.albumKey).cover}" title="Click to set artwork">
+    // Not a target of its own. The cover used to open the artwork picker, which
+    // meant every mis-aimed tap on a 40px square in a list you are scrolling
+    // threw up a file dialog. It plays the row like the rest of the row does;
+    // setting artwork lives in the row's menu, where it is asked for.
+    : `<div class="tile" style="--cover:${tintOf(t.albumKey).cover}">
          <img data-art="${t.artId || ''}" class="is-empty" alt=""></div>`;
 
   return `<div class="${cls}" data-id="${t.id}"${draggable ? ' draggable="true"' : ''}>
@@ -862,7 +1036,6 @@ function onTrackListClick(e) {
     updateSelectionBar();
     return;
   }
-  if (e.target.closest('.tile')) { pickArtFor({ trackId: row.dataset.id }); return; }
   playTrack(row.dataset.id, visibleContextFor(row));
 }
 
@@ -1076,12 +1249,37 @@ function enableDragOrder(list, onCommit) {
   });
 }
 
+/** One editable name in an `artists` field. The first is the one the record is
+ *  filed under, so it is marked and cannot be removed — only renamed. */
+function artistRowHtml(value, primary) {
+  return `<div class="artist-row">
+    <span class="artist-tag">${primary ? 'Filed under' : 'Also'}</span>
+    <input class="text" type="text" value="${escapeHtml(value ?? '')}" autocomplete="off" spellcheck="false"
+           aria-label="${primary ? 'Primary artist' : 'Additional artist'}">
+    ${primary ? '' : '<button type="button" class="artist-drop" data-act="drop-artist" title="Remove this artist" aria-label="Remove this artist">×</button>'}
+  </div>`;
+}
+
+/** Re-label the rows after one is added or dropped: whoever is first is primary. */
+function reindexArtistRows(box) {
+  [...box.querySelectorAll('.artist-row')].forEach((row, i) => {
+    row.querySelector('.artist-tag').textContent = i ? 'Also' : 'Filed under';
+    const drop = row.querySelector('.artist-drop');
+    if (i === 0 && drop) drop.remove();
+    if (i > 0 && !drop) {
+      row.insertAdjacentHTML('beforeend',
+        '<button type="button" class="artist-drop" data-act="drop-artist" title="Remove this artist" aria-label="Remove this artist">×</button>');
+    }
+  });
+}
+
 /**
  * Small reusable edit form.
  * @param {object} o
  * @param {string} o.title
  * @param {string} [o.hint]
  * @param {Array<{key,label,value,type?,hint?,span?}>} o.fields
+ *        `type:'artists'` takes and returns a list of names rather than a string.
  * @param {(values:object)=>Promise<void>} o.onSave
  */
 function formDialog({ title, hint, fields, saveLabel = 'Save', onSave }) {
@@ -1095,7 +1293,16 @@ function formDialog({ title, hint, fields, saveLabel = 'Save', onSave }) {
       ${fields.map((f) => (f.type === 'checkbox'
     ? `<label class="switch span2"><input id="${inputId(f)}" type="checkbox"${f.value ? ' checked' : ''}>
          <span>${escapeHtml(f.label)}</span></label>`
-    : `<div class="field${f.span ? ' span2' : ''}">
+    : f.type === 'artists'
+      ? `<div class="field span2">
+           <label>${escapeHtml(f.label)}</label>
+           <div class="artist-rows" id="${inputId(f)}">
+             ${(f.value?.length ? f.value : ['']).map((v, i) => artistRowHtml(v, i === 0)).join('')}
+           </div>
+           <button type="button" class="btn ghost artist-add" data-act="add-artist">+ Add artist</button>
+           ${f.hint ? `<p class="hint">${escapeHtml(f.hint)}</p>` : ''}
+         </div>`
+      : `<div class="field${f.span ? ' span2' : ''}">
          <label for="${inputId(f)}">${escapeHtml(f.label)}</label>
          <input id="${inputId(f)}" class="text" type="${f.type || 'text'}"
                 value="${escapeHtml(f.value ?? '')}" autocomplete="off" spellcheck="false">
@@ -1111,7 +1318,9 @@ function formDialog({ title, hint, fields, saveLabel = 'Save', onSave }) {
 
   const read = () => Object.fromEntries(fields.map((f) => {
     const el = $(`#${inputId(f)}`);
-    return [f.key, f.type === 'checkbox' ? el.checked : el.value];
+    if (f.type === 'checkbox') return [f.key, el.checked];
+    if (f.type === 'artists') return [f.key, [...el.querySelectorAll('input')].map((i) => i.value)];
+    return [f.key, el.value];
   }));
 
   // Resolves once the form is finished with — after onSave has run, or straight
@@ -1131,15 +1340,32 @@ function formDialog({ title, hint, fields, saveLabel = 'Save', onSave }) {
     settle();
   };
 
+  /** Append an empty row to an artists field and put the cursor in it. */
+  const addArtist = (box) => {
+    box.insertAdjacentHTML('beforeend', artistRowHtml('', false));
+    reindexArtistRows(box);
+    box.querySelector('.artist-row:last-child input')?.focus();
+  };
+
   dlg.onclick = (e) => {
-    if (e.target.dataset?.act === 'save') save();
-    if (e.target.dataset?.act === 'cancel') dlg.close();
+    const act = e.target.dataset?.act;
+    if (act === 'save') save();
+    if (act === 'cancel') dlg.close();
+    if (act === 'add-artist') addArtist(e.target.previousElementSibling);
+    if (act === 'drop-artist') {
+      const box = e.target.closest('.artist-rows');
+      e.target.closest('.artist-row').remove();
+      reindexArtistRows(box);
+    }
   };
   dlg.onkeydown = (e) => {
-    if (e.key === 'Enter' && e.target.tagName === 'INPUT' && e.target.type !== 'checkbox') {
-      e.preventDefault();
-      save();
-    }
+    if (e.key !== 'Enter' || e.target.tagName !== 'INPUT' || e.target.type === 'checkbox') return;
+    e.preventDefault();
+    // Enter in the artist list means "and also…", not "done" — the row you are
+    // typing in is usually not the last one you meant to add.
+    const box = e.target.closest('.artist-rows');
+    if (box) addArtist(box);
+    else save();
   };
   dlg.showModal();
   const first = dlg.querySelector('input.text');
@@ -1179,7 +1405,14 @@ function openTrackEditDialog(track) {
     hint: 'Changing the album or album artist moves this track to that album.',
     fields: [
       { key: 'title', label: 'Title', value: track.title, span: true },
-      { key: 'artist', label: 'Artist', value: track.artist, span: true },
+      {
+        key: 'artists',
+        label: 'Artists',
+        type: 'artists',
+        value: artistsOf(track),
+        hint: 'Guests are listed after the first name and change nothing else — '
+            + 'the track stays on the record it is already on.',
+      },
       { key: 'album', label: 'Album', value: track.album },
       { key: 'albumArtist', label: 'Album artist', value: track.albumArtist, hint: 'Leave empty to use the artist' },
       { key: 'trackNo', label: 'Track no.', value: track.trackNo || '', type: 'number' },
@@ -1214,13 +1447,15 @@ function openBulkArtistDialog() {
     saveLabel: 'Apply',
     fields: [
       { key: 'artist', label: 'Artist', value: artists.length === 1 ? artists[0] : '', span: true },
+      { key: 'add', label: 'Add it to the artists already there (a guest on all of them)', type: 'checkbox', value: false },
       { key: 'albumArtist', label: 'Also set album artist to the same', type: 'checkbox', value: false },
     ],
-    async onSave({ artist, albumArtist }) {
+    async onSave({ artist, add, albumArtist }) {
       if (!artist.trim()) { toast('Enter an artist name', 'err'); return; }
       const ctrl = progressStart(`Updating ${ids.length} track${ids.length === 1 ? '' : 's'}`);
       try {
-        const fields = { artist };
+        // Adding leaves each track's own first name — and so its record — alone.
+        const fields = add ? { addArtists: [artist] } : { artist };
         if (albumArtist) fields.albumArtist = artist;
         const n = await lib.updateTracks(ids, fields, {
           signal: ctrl.signal,
@@ -1908,6 +2143,18 @@ function sourceLabel(t) {
   return `in this browser${t.hasOriginal ? ' · the original is kept alongside it' : ''}`;
 }
 
+/** Measure one track again — from its details, or from its menu. */
+async function reanalyzeTrack(t) {
+  const ctrl = progressStart('Analyzing');
+  try {
+    await lib.analyzeTrack(t, { onProgress: (p) => ctrl.set(p, t.title) });
+    await lib.refreshAlbum(t.albumKey);
+    await reload();
+  } catch (err) {
+    toast(err.message, 'err');
+  } finally { ctrl.done(); }
+}
+
 async function openTrackDialog(id) {
   const t = state.tracks.find((x) => x.id === id);
   if (!t) return;
@@ -1973,14 +2220,7 @@ async function openTrackDialog(id) {
     if (act === 'play') { dlg.close(); playTrack(t.id, visibleTracks().map((x) => x.id)); return; }
     if (act === 'edit') { dlg.close(); openTrackEditDialog(t); return; }
     if (act === 'art') { dlg.close(); pickArtFor({ trackId: t.id }); return; }
-    if (act === 'analyze') {
-      dlg.close();
-      const ctrl = progressStart('Analyzing');
-      try { await lib.analyzeTrack(t, { onProgress: (p) => ctrl.set(p, t.title) }); await lib.refreshAlbum(t.albumKey); await reload(); }
-      catch (err) { toast(err.message, 'err'); }
-      finally { ctrl.done(); }
-      return;
-    }
+    if (act === 'analyze') { dlg.close(); await reanalyzeTrack(t); return; }
     if (act === 'normalize') { dlg.close(); normalizeTracks([t]); return; }
     if (act === 'send') { dlg.close(); sendTracks([t.id], t.title); return; }
     if (act === 'restore') {
@@ -2074,6 +2314,14 @@ function bindSettings() {
     applyTheme();
   });
   haze.addEventListener('change', () => db.setSetting('haze', +haze.value));
+  renderCoverFilters();
+  $('#set-cover-filter').addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-cover-filter]');
+    if (!btn) return;
+    await db.setSetting('coverFilter', btn.dataset.coverFilter);
+    applyTheme();            // one attribute on <html>; nothing has to re-render
+    renderCoverFilters();
+  });
   // The tint is baked into each tile's inline --cover, so the lists have to redraw.
   bindCheck('#set-tint', 'tintedCovers', renderAll);
   bindCheck('#set-spin', 'spinDisc', () => setSpin(player.playing));
@@ -2384,6 +2632,13 @@ async function openRestoreDialog(file) {
     },
   });
   await closed;
+}
+
+function renderCoverFilters() {
+  const cur = state.settings.coverFilter || 'none';
+  $('#set-cover-filter').innerHTML = db.COVER_FILTERS.map((f) =>
+    `<button type="button" role="radio" aria-checked="${f.key === cur}" data-cover-filter="${f.key}"
+             class="${f.key === cur ? 'is-active' : ''}">${f.label}</button>`).join('');
 }
 
 function renderBackdrops() {

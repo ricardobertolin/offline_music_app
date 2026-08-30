@@ -91,9 +91,17 @@ corners, one accent colour — the **Offpress** design.
   tile is 120–220 css px, so a phone asks it for 400-plus device pixels and the thumb was
   being blown up nearly 4× — which is why the grid read soft next to the record's own hero.
   Thumbnails stay where they fit, on the 40 px track rows.
-- Tapping a record's cover does **not** open the file picker. Setting a cover is a
-  deliberate act behind **⚙ Configure → Set cover**; on a phone the tap-to-set version fired
-  every time you meant to scroll.
+- Tapping a cover does **not** open the file picker — not the record's, and not the 40 px
+  one in a track row, which used to. Setting artwork is a deliberate act behind
+  **⚙ Configure → Set cover**, the track's **⋮ → Set artwork**, or its right-click menu; the
+  tap-to-set version fired every time you meant to scroll past a list on a phone. A cover
+  in a row now plays the row, like the rest of the row.
+- **Right-clicking** anywhere in the app gives the app's menu, not the browser's. On a
+  track: play, details, edit, set artwork, re-analyze, normalize, send, delete. On a record
+  or its hero: open, play, shuffle, rename, set cover, send, delete. On the transport or
+  the Now-playing screen: whatever is playing. Anywhere else: transport controls, the views,
+  the two ways to add music, and a reload. Text fields keep the native menu, because
+  cut/copy/paste lives nowhere else. A long-press does the same thing on a phone.
 - The page itself never scrolls. Only the stage and the folded rail do, so nothing can be
   dragged around the way a zoomed page can.
 - A record's hero carries a **live output meter** while something is playing. It reads
@@ -105,6 +113,13 @@ corners, one accent colour — the **Offpress** design.
   turning press and the live meter. The default is **Blank**, plain white; the ink on the
   accent is chosen from its luminance, so a near-white accent stays readable without a
   second setting to get wrong.
+- **Cover filter** prints every cover through one treatment: *B&W*, *Sepia*, *Duotone*
+  (black through to your accent colour), *Posterize* (cut to four ink levels) or *Dither*
+  (one ink, noise-dithered to black or white). It reaches the grid, the record hero, the
+  track rows, the details dialog, the transport and the Now-playing screen. CSS can grey a
+  picture down but it cannot posterize, dither or duotone one, so the last three are SVG
+  filters defined in `index.html`. Display only: the stored artwork is never altered, so a
+  backup still carries the original picture and **Off** puts it straight back.
 - **Settings → Backdrop** puts a wallpaper behind the whole window. *Grooves*, *Halftone*
   and *Sleeve* are drawn in CSS from the accent colour and cost nothing. *Image* uses a
   picture you choose: it is downscaled to 1920 px on the longest edge, stored in IndexedDB
@@ -142,15 +157,23 @@ Click a record to open just its tracks. Inside:
 - **Delete record** removes every track in it, its audio, and any artwork left orphaned.
 
 ### Editing tags
-**⋮ → Edit details** on any track edits title, artist, album, album artist, track and disc
+**⋮ → Edit details** on any track edits title, artists, album, album artist, track and disc
 number, year and genre. The album key is derived from album/album artist, so changing
 either *moves* the track — both the album it left and the album it joined are recounted
 immediately. Blank values fall back (`Unknown Artist`, the file name) rather than leaving
 an unreachable entry.
 
+**Artists is a list.** *+ Add artist* puts a second, third or fourth name on a track, and
+the row shows all of them. Only the first one — marked *Filed under*, and the only one that
+cannot be removed — decides which record the track belongs to, so a guest on one song does
+not split a one-track album off the record it is part of. The album artist, where a track
+has one, still outranks all of it. Tracks imported before this carry the single name their
+tags held, which is the same list with one entry in it.
+
 To fix many tracks at once, use **Select → Set artist…**: it pre-fills when the selection
 already shares an artist, says how many artists it spans when it doesn't, and can set the
-album artist to match in the same pass.
+album artist to match in the same pass. Ticking **add it to the artists already there**
+credits a guest across the whole selection without touching what any of it is filed under.
 
 ### Deleting
 
@@ -256,8 +279,9 @@ zipped album orders and names itself exactly like a real folder would.
 - **Tracks** — everything, searchable, with rail filters for *not analyzed*, *off target*
   and *below quality*, plus multi-select for bulk artist edits and deletion
 - **Quality** — library statistics, loudness distribution, and the batch normalizer
-- **Settings** — appearance, target loudness and ceiling, track/album/off mode, limiter,
-  encoding target, artwork sizes, storage, and a **Version** panel at the foot
+- **Settings** — appearance and cover filter, backdrop, target loudness and ceiling,
+  track/album/off mode, limiter, encoding target, artwork sizes, backup, storage, and a
+  **Version** panel at the foot
 
 **Version** prints the build you are running and the offline cache the service worker is
 actually serving. When those two disagree you are looking at stale code, which is the
@@ -265,8 +289,9 @@ usual reason a change does not show up after a deploy — **Check for update** r
 the worker, activates a waiting one and reloads. `APP_VERSION` in `js/util.js` and
 `VERSION` in `sw.js` are the two places the number is written; keep them in step.
 
-Click a row to play, click its cover to set artwork, click **⋮** for the full measurement
-readout and per-track actions.
+Click a row — cover included — to play it, click **⋮** for the full measurement readout and
+per-track actions, and **right-click** anything for the same actions without the trip
+through the dialog.
 
 ## Running locally
 

@@ -7,7 +7,10 @@ import { analyzeBlob } from './audio/decode.js';
 import { transcode, matchesTarget } from './audio/transcode.js';
 import { saveArtwork, forgetArtUrl } from './image.js';
 import { normalizationGain, mergeHistograms, integratedFromHistogram } from './dsp/loudness.js';
-import { uid, albumKeyOf, fileHash, naturalCompare, folderOf, pathOf } from './util.js';
+import {
+  uid, albumKeyOf, fileHash, naturalCompare, folderOf, pathOf,
+  artistsOf, cleanArtists, joinArtists, primaryArtistOf,
+} from './util.js';
 
 const AUDIO_RE = /\.(mp3|m4a|m4b|mp4|aac|flac|ogg|oga|opus|wav|wave|aif|aiff|weba|webm|wma)$/i;
 
@@ -220,6 +223,9 @@ function newTrack(file, meta, hash, pos) {
     addedAt: Date.now(),
     title: meta.title || base,
     artist: meta.artist || 'Unknown Artist',
+    // The list the UI edits. Tags carry one name, so that is what it starts as —
+    // a second one is only ever added by hand. See setArtists.
+    artists: [meta.artist || 'Unknown Artist'],
     albumArtist: meta.albumArtist || '',
     // An untagged file still belongs somewhere: its folder is the best guess,
     // and it keeps two untagged folders from merging into one "Unknown Album".
@@ -306,7 +312,9 @@ export async function refreshAlbum(key) {
   const album = {
     key,
     name: first.album || 'Unknown Album',
-    artist: first.albumArtist || first.artist || 'Unknown Artist',
+    // The primary, not the joined credit: a record whose opening track features
+    // a guest is still that record's artist's record.
+    artist: primaryArtistOf(first),
     artId: tracks.find((t) => t.artId)?.artId || null,
     // Custom ordering survives re-analysis, renames and new imports.
     sortMode: previous?.sortMode || 'folder',
@@ -390,15 +398,40 @@ export async function setAlbumOrder(key, ids) {
 const EDITABLE = ['title', 'artist', 'albumArtist', 'album', 'trackNo', 'discNo', 'year', 'genre'];
 const NUMERIC = new Set(['trackNo', 'discNo']);
 
+/**
+ * Write a track's artist list, keeping the `artist` display string in step.
+ *
+ * The first name is the one the album key is derived from, so everything after
+ * it is a guest: adding "Nina Simone" to a Talk Talk track lists both on the row
+ * and leaves the track exactly where it was on the record. Which is the point —
+ * a collaboration is not a separate album.
+ */
+export function setArtists(track, list) {
+  const clean = cleanArtists(list);
+  track.artists = clean.length ? clean : ['Unknown Artist'];
+  track.artist = joinArtists(track.artists);
+  return track;
+}
+
+/** Append names to whatever the track already credits. */
+export const addArtists = (track, list) =>
+  setArtists(track, [...artistsOf(track), ...cleanArtists(list)]);
+
 function applyFields(track, fields) {
+  // `artists` (the list) and `artist` (one name) are two ways of saying the same
+  // thing, so only one of them is ever read — the list wins where both are given.
+  if (fields.artists !== undefined) setArtists(track, fields.artists);
+  else if (fields.addArtists !== undefined) addArtists(track, fields.addArtists);
+  else if (fields.artist !== undefined) setArtists(track, [fields.artist]);
+
   for (const k of EDITABLE) {
-    if (!(k in fields) || fields[k] === undefined) continue;
+    if (k === 'artist' || !(k in fields) || fields[k] === undefined) continue;
     const v = fields[k];
     track[k] = NUMERIC.has(k) ? (parseInt(v, 10) || 0) : String(v ?? '').trim();
   }
   // A track must always have something to show and somewhere to live.
   if (!track.title) track.title = (track.fileName || 'Unknown').replace(/\.[^.]+$/, '');
-  if (!track.artist) track.artist = 'Unknown Artist';
+  if (!track.artist) setArtists(track, ['Unknown Artist']);
   if (!track.album) track.album = 'Unknown Album';
   return track;
 }
@@ -458,7 +491,9 @@ export async function renameAlbum(key, { name, artist, applyToTrackArtists = fal
     if (name != null && name.trim()) t.album = name.trim();
     if (artist != null) {
       t.albumArtist = artist.trim();
-      if (applyToTrackArtists && t.albumArtist) t.artist = t.albumArtist;
+      // Overwriting the credit drops any guests with it — that is what "set every
+      // track's artist to this" asks for.
+      if (applyToTrackArtists && t.albumArtist) setArtists(t, [t.albumArtist]);
     }
     t.albumKey = albumKeyOf(t);
     await db.put('tracks', t);

@@ -3,7 +3,7 @@
 /** The one place the app's version is written down. `sw.js` carries its own copy
  *  of the same string (a service worker cannot import from here), and Settings →
  *  Version shows both so a stale cache is visible rather than mysterious. */
-export const APP_VERSION = '2.7.1';
+export const APP_VERSION = '2.8.0';
 
 export const $ = (sel, root = document) => root.querySelector(sel);
 export const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -92,8 +92,42 @@ export function folderOf(file) {
 
 export const pathOf = (file) => file.relPath || file.webkitRelativePath || file.name || '';
 
+/* -------------------------------- artists --------------------------------- */
+
+/**
+ * A track's artists as a list. `artists` is the stored truth once a track has
+ * been edited; everything imported before that has only the single `artist`
+ * string the tags carried, which is the same thing with one entry.
+ */
+export const artistsOf = (t) =>
+  (Array.isArray(t?.artists) && t.artists.length ? t.artists : (t?.artist ? [t.artist] : []));
+
+/** Trim, drop blanks, drop case-insensitive repeats — order is kept. */
+export function cleanArtists(list) {
+  const out = [];
+  const seen = new Set();
+  for (const raw of (Array.isArray(list) ? list : [list])) {
+    const name = String(raw ?? '').trim();
+    const key = name.toLowerCase();
+    if (!name || seen.has(key)) continue;
+    seen.add(key);
+    out.push(name);
+  }
+  return out;
+}
+
+export const joinArtists = (list) => cleanArtists(list).join(', ');
+
+/**
+ * The one artist a track is filed under. A collaboration adds names after the
+ * first without moving the track: only the first one — or the album artist,
+ * which always wins — decides which record it belongs to.
+ */
+export const primaryArtistOf = (t) =>
+  (String(t?.albumArtist || '').trim() || artistsOf(t)[0] || 'Unknown Artist');
+
 export function albumKeyOf(t) {
-  const artist = (t.albumArtist || t.artist || 'Unknown Artist').trim().toLowerCase();
+  const artist = primaryArtistOf(t).trim().toLowerCase();
   const album = (t.album || 'Unknown Album').trim().toLowerCase();
   return `${artist} :: ${album}`;
 }

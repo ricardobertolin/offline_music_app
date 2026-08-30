@@ -108,6 +108,7 @@ export const DEFAULTS = {
   accent: '#ffffff',        // appearance — see ACCENTS
   haze: 0.08,               // grain opacity over covers and record heroes
   tintedCovers: true,       // colour records that have no cover art
+  coverFilter: 'none',      // print treatment over every cover — see COVER_FILTERS
   spinDisc: true,           // rotate the press on the transport while playing
   discCover: true,          // ...and cut the cover itself to the record's face
   phoneColumns: false,      // phones show title only; true brings quality + time back
@@ -127,6 +128,21 @@ export const ACCENTS = [
   { label: 'Ultra', hex: '#5b5bf5' },
   { label: 'Bleach', hex: '#e8e6e1' },
   { label: 'Rave', hex: '#f23c8c' },
+];
+
+/**
+ * How covers are printed. Display only — the stored image is never touched, so
+ * switching back is free and a backup still carries the original picture.
+ * `mono` and `sepia` are plain CSS filters; the last three are SVG filters
+ * defined in index.html, because CSS cannot posterize, dither or duotone.
+ */
+export const COVER_FILTERS = [
+  { key: 'none', label: 'Off' },
+  { key: 'mono', label: 'B&W' },
+  { key: 'sepia', label: 'Sepia' },
+  { key: 'duotone', label: 'Duotone' },
+  { key: 'posterize', label: 'Posterize' },
+  { key: 'dither', label: 'Dither' },
 ];
 
 /** Window backdrops. The first four are drawn in CSS off the accent; "image"
