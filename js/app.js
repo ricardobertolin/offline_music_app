@@ -123,8 +123,24 @@ function tintOf(key) {
 
 boot().catch((err) => {
   console.error(err);
+  bootDone();   // a failed start still has to stop pretending it is loading
   toast(`Startup failed: ${err.message}`, 'err');
 });
+
+/**
+ * Take the page out of its loading state. index.html ships with
+ * html[data-boot="loading"], which holds back every "nothing here yet" message
+ * and puts placeholder rows in their place — otherwise the first paint claims
+ * an empty library and then contradicts itself a moment later, which is what
+ * every start looked like on a phone.
+ *
+ * Called after the first render rather than after the reads, and one frame
+ * late, so the swap happens with the real rows already laid out.
+ */
+function bootDone() {
+  if (document.documentElement.dataset.boot === 'ready') return;
+  requestAnimationFrame(() => { document.documentElement.dataset.boot = 'ready'; });
+}
 
 async function boot() {
   state.settings = await db.settings();
@@ -138,6 +154,7 @@ async function boot() {
   applySettingsToUI();
   await lib.migrateLibrary();   // rebuild album keys / import positions if needed
   await reload();
+  bootDone();
   wirePlayer();
   registerSW();
   handleLaunchFiles();
@@ -1007,13 +1024,23 @@ function pickRange(id) {
 }
 
 /** A record with no cover keeps its printed face — there is no placeholder
- *  image to swap in, so the img is simply left empty and hidden. */
+ *  image to swap in, so the img is simply left empty and hidden.
+ *
+ *  Every row at once rather than one after another: the reads are independent,
+ *  and walking a few hundred of them in series is what made the covers appear
+ *  a row at a time down a list the user was already looking at. artUrl folds
+ *  the repeats together, so this is a handful of reads however long the list. */
 async function hydrateArt(root) {
-  for (const img of $$('img[data-art]', root)) {
-    const url = img.dataset.art ? await artUrl(img.dataset.art, img.dataset.size || 'thumb') : null;
+  await Promise.all($$('img[data-art]', root).map(async (img) => {
+    // One unreadable art record leaves that row on its printed face rather than
+    // taking the whole pass down with it.
+    const url = img.dataset.art
+      ? await artUrl(img.dataset.art, img.dataset.size || 'thumb').catch(() => null)
+      : null;
+    if (!img.isConnected) return;   // a re-render replaced the row mid-read
     if (url) { img.src = url; img.classList.remove('is-empty'); }
     else { img.removeAttribute('src'); img.classList.add('is-empty'); }
-  }
+  }));
 }
 
 function onTrackListClick(e) {

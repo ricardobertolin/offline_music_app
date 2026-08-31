@@ -191,18 +191,29 @@ export async function normalizeBackdrop(source, max = 1920) {
 
 /* -------------------------------- URL cache ------------------------------- */
 
-const urls = new Map(); // `${id}:${kind}` → objectURL
+const urls = new Map();     // `${id}:${kind}` → objectURL
+/** Reads that have not come back yet. A record's cover is on every one of its
+ *  tracks, so a list drawn in one pass asks for the same twenty images a few
+ *  hundred times; without this each of those is its own store read and the
+ *  covers trickle in for as long as that takes. */
+const inflight = new Map(); // `${id}:${kind}` → Promise<string|null>
 
 export async function artUrl(id, kind = 'thumb') {
   if (!id) return null;
   const key = `${id}:${kind}`;
   if (urls.has(key)) return urls.get(key);
-  const rec = await get('art', id);
-  const blob = rec && (kind === 'full' ? rec.full : rec.thumb);
-  if (!blob) return null;
-  const url = URL.createObjectURL(blob);
-  urls.set(key, url);
-  return url;
+  if (inflight.has(key)) return inflight.get(key);
+
+  const read = (async () => {
+    const rec = await get('art', id);
+    const blob = rec && (kind === 'full' ? rec.full : rec.thumb);
+    if (!blob) return null;
+    const url = URL.createObjectURL(blob);
+    urls.set(key, url);
+    return url;
+  })();
+  inflight.set(key, read);
+  try { return await read; } finally { inflight.delete(key); }
 }
 
 export function forgetArtUrl(id) {

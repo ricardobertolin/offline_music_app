@@ -614,6 +614,96 @@ html[data-cover-filter=dither] :is(.tile,.t-art) img{filter:url(#cover-dither)}
 .empty p{max-width:52ch;margin:0 auto 10px}
 .empty .row{justify-content:center;margin-top:22px}
 
+/* ============================== first paint ==============================
+
+   Reading the library out of IndexedDB takes a beat, and on a phone it takes
+   several. Before this the page painted its own empty state in that gap —
+   "Nothing pressed yet" over a library of four hundred tracks — and then
+   replaced it. html[data-boot] is set in the markup and flipped by app.js once
+   the first render is on screen, so nothing that says "empty" can be drawn
+   until we actually know it is. */
+
+html[data-boot=loading] :is(#tracks-empty,#tracks-head,#album-grid,.quality-summary,#report-body){
+  display:none !important;
+}
+
+.skeleton{display:none;pointer-events:none;user-select:none}
+html[data-boot=loading] #tracks-skeleton{display:flex}
+html[data-boot=loading] #albums-skeleton{display:grid}
+/* Faded out down the page: the rows are a suggestion of a list, not a claim
+   about how long it is. */
+.skeleton{
+  -webkit-mask-image:linear-gradient(#000 30%,rgba(0,0,0,.35) 72%,transparent);
+          mask-image:linear-gradient(#000 30%,rgba(0,0,0,.35) 72%,transparent);
+  /* Held at zero through the delay, so a library that loads in 40ms — which is
+     most of them on a desktop — never shows a skeleton at all. */
+  animation:sk-in .22s ease .16s both;
+}
+.skeleton .track{cursor:default}
+.skeleton .track:hover{background:none}
+
+/* The bars themselves. <i> inside the real row's own column divs, so they
+   inherit the grid and every rule that hides a column at phone widths. */
+.sk{position:relative;overflow:hidden;background:rgba(255,255,255,.055);border-color:transparent}
+i.sk{display:block;height:9px}
+.skeleton .col i.sk-1{height:11px;width:62%}
+.skeleton .col i.sk-2{height:8px;width:38%;margin-top:6px;background:rgba(255,255,255,.038)}
+.skeleton .album i.sk-1{height:11px;width:78%;margin-top:11px}
+.skeleton .album i.sk-2{height:9px;width:52%;margin-top:6px;background:rgba(255,255,255,.038)}
+.skeleton .qual i.sk{height:14px}
+.skeleton .num i.sk{height:8px;margin-left:auto;width:70%}
+/* The tile keeps its printed grid, dot screen and hairline — it is the same
+   face a record with no cover wears, so the swap to a real one is a fade and
+   not a redraw. */
+.skeleton .tile.sk{background:var(--ink-4);border-color:var(--line)}
+
+/* One pass of light across the placeholder, staggered down the list so it reads
+   as a sweep rather than eight things blinking together. */
+.sk::after{
+  content:"";position:absolute;inset:0;
+  background:linear-gradient(100deg,transparent 18%,rgba(255,255,255,.085) 50%,transparent 82%);
+  transform:translateX(-100%);
+  animation:sk-sweep 1.5s ease-in-out infinite;
+}
+.skeleton > :nth-child(2) .sk::after{animation-delay:.07s}
+.skeleton > :nth-child(3) .sk::after{animation-delay:.14s}
+.skeleton > :nth-child(4) .sk::after{animation-delay:.21s}
+.skeleton > :nth-child(5) .sk::after{animation-delay:.28s}
+.skeleton > :nth-child(6) .sk::after{animation-delay:.35s}
+.skeleton > :nth-child(7) .sk::after{animation-delay:.42s}
+.skeleton > :nth-child(8) .sk::after{animation-delay:.49s}
+
+@keyframes sk-in{from{opacity:0}to{opacity:1}}
+@keyframes sk-sweep{
+  0%{transform:translateX(-100%)}
+  60%,100%{transform:translateX(100%)}
+}
+
+/* The real thing, arriving. The attribute changes exactly once, so this plays
+   on the first render and never again — later re-renders are not entrances. */
+html[data-boot=ready] :is(#track-list,#tracks-head,#tracks-empty,#album-grid){
+  animation:boot-in .3s cubic-bezier(.2,.7,.3,1) both;
+}
+html[data-boot=ready] #tracks-empty{animation-duration:.42s}
+@keyframes boot-in{from{opacity:0;transform:translateY(6px)}}
+
+/* A cover is fetched out of the store and decoded after its row is already
+   drawn, so it lands late however fast the library reads. Fading it in over the
+   printed face is the difference between artwork arriving and artwork popping.
+   The transport and the Now-playing screen are left out on purpose: their
+   covers carry the record's own rotation, and this would overwrite it. */
+:is(.track,.album,.hero) .tile img:not(.is-empty){
+  animation:art-in .34s ease both;
+}
+@keyframes art-in{from{opacity:0}}
+
+@media (prefers-reduced-motion:reduce){
+  .sk::after{animation:none}
+  .skeleton{animation-duration:.01ms;animation-delay:.16s}
+  html[data-boot=ready] :is(#track-list,#tracks-head,#tracks-empty,#album-grid),
+  :is(.track,.album,.hero) .tile img:not(.is-empty){animation:none}
+}
+
 /* ============================== panels ============================== */
 
 .panel{

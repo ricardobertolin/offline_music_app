@@ -63,6 +63,30 @@ try {
   await bootWait();
   console.log('--- clean start ---\n');
 
+  /* ---------- 0. the first paint ----------
+     Reading the library takes long enough on a phone to be seen, and before
+     html[data-boot] the page filled that gap with its own empty state — so a
+     full library started every session by announcing it was empty. The state
+     is put back by hand here rather than raced against a real boot, because
+     what is being checked is the rule, not how fast this machine reads. */
+  await waitFor(page, `document.documentElement.dataset.boot === 'ready'`, { label: 'boot finishes' });
+  const paint = await page.evaluate(() => {
+    const html = document.documentElement;
+    const shown = (sel) => getComputedStyle(document.querySelector(sel)).display !== 'none';
+    const at = (state) => {
+      html.dataset.boot = state;
+      return { empty: shown('#tracks-empty'), rows: shown('#tracks-skeleton'), tiles: shown('#albums-skeleton') };
+    };
+    const loading = at('loading');
+    const ready = at('ready');
+    return { loading, ready };
+  });
+  ok('while the library is being read, nothing claims it is empty', !paint.loading.empty);
+  ok('placeholder rows and tiles stand in instead',
+    paint.loading.rows && paint.loading.tiles);
+  ok('once it has been read the real answer shows', paint.ready.empty);
+  ok('...and the placeholders are gone', !paint.ready.rows && !paint.ready.tiles);
+
   /* ---------- 1. clicking an album opens it (the reported bug) ---------- */
   await page.evaluate(MAKE_FILES);
   await page.evaluate(async () => {
