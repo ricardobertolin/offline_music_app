@@ -434,6 +434,45 @@
         by content hash with its loudness, quality, artwork and tag edits intact.</p>
       </div>
 
+      <div class="panel" id="beam-panel">
+        <h3>Beam &amp; sync</h3>
+        <p class="hint">Two devices, one direct connection. The other browser gets the tracks it is
+        missing — audio, covers and every measurement — and nothing that is already there moves
+        again. Run it twice and the second run has nothing to do; stop it halfway and starting
+        again picks up where it left off.</p>
+        <p class="hint">Nothing is uploaded: the music goes browser to browser. Only the
+        introduction — a few hundred bytes saying "here is where I am" — passes through a
+        signalling broker, and on the same Wi-Fi the transfer runs at network speed.</p>
+        <div class="row">
+          <button id="btn-beam-host" class="btn primary">Start a beam…</button>
+          <button id="btn-beam-join" class="btn ghost">Join a beam…</button>
+        </div>
+        <p class="hint" id="beam-unsupported" hidden>This browser has no WebRTC data channels, so
+        it cannot beam. Use <b>Back up the library</b> above and carry the .zip across instead.</p>
+        <p class="hint">A beam only ever adds. Deleting a record here never deletes it there —
+        "I removed that album" and "I have not imported it yet" look identical from the other end,
+        and guessing wrong would cost you an album.</p>
+
+        <details class="netcfg">
+          <summary>Network</summary>
+          <p class="hint">WebRTC needs a <b>TURN</b> relay to get through symmetric NAT and strict
+          firewalls, which is what mobile carriers and most offices run; STUN alone is enough on a
+          normal home network. Only STUN is configured, and no relay ships with the app on purpose
+          — a free public one that has gone stale looks configured while failing exactly when it is
+          needed. Put your own below, or point <code>server</code> at your own peerjs-server to
+          keep even the introduction on your own network.</p>
+          <textarea id="beam-net-config" class="text netbox" spellcheck="false" rows="12"
+                    aria-label="ICE and broker configuration (JSON)"></textarea>
+          <div class="row">
+            <button id="btn-beam-net-save" class="btn">Save</button>
+            <button id="btn-beam-net-test" class="btn ghost">Test this network</button>
+            <button id="btn-beam-net-reset" class="btn ghost">Reset</button>
+          </div>
+          <p class="hint" id="beam-net-status">Saved in this browser only — the other device needs
+          its own working configuration too.</p>
+        </details>
+      </div>
+
       <div class="panel" id="folders-panel" hidden>
         <h3>Linked folders</h3>
         <p class="hint">A linked folder is read where it sits, so the app never keeps a second

@@ -1055,6 +1055,51 @@ button.rep-chip:hover{border-color:var(--accent);color:var(--fg-hi)}
 .meter{height:4px;background:rgba(255,255,255,.1);overflow:hidden;margin-top:8px}
 .meter i{display:block;height:100%;background:var(--accent)}
 
+/* ================================ beam ================================ */
+
+/* The two ways to send a record. Big targets rather than a row of buttons:
+   the choice between them is the interesting part, and each needs a sentence
+   to explain what it costs. */
+.send-ways{display:grid;gap:10px;margin:18px 0 4px}
+.send-way{
+  appearance:none;text-align:left;cursor:pointer;display:grid;gap:6px;
+  background:transparent;border:1px solid var(--line-2);color:var(--fg);padding:14px 16px;
+}
+.send-way:hover:not(:disabled){border-color:var(--accent-line);background:rgba(255,255,255,.04)}
+.send-way:disabled{opacity:.4;cursor:not-allowed}
+.send-way .way-name{
+  font-family:var(--mono);font-size:9px;letter-spacing:.2em;text-transform:uppercase;color:var(--fg-hi);
+}
+.send-way .way-sub{font-size:13px;line-height:1.5;color:var(--fg-3)}
+
+/* The pairing code is meant to be read out loud from across a desk, so it is
+   set at display size and spaced like a serial number. */
+.beam-pair{display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap;margin:18px 0}
+.beam-qr{
+  width:168px;height:168px;flex:0 0 168px;image-rendering:pixelated;
+  border:1px solid var(--line-2);background:#fff;
+}
+.beam-code{
+  font-family:var(--mono);font-size:34px;letter-spacing:.22em;color:var(--fg-hi);line-height:1.1;
+}
+.beam-link{word-break:break-all;font-family:var(--mono);font-size:11px;letter-spacing:.04em}
+.dlg input.text.beam-input{
+  font-family:var(--mono);font-size:24px;letter-spacing:.24em;text-transform:uppercase;
+  max-width:280px;
+}
+.netbox{
+  display:block;width:100%;margin-top:12px;padding:10px 12px;background:var(--ink-4);
+  border:1px solid var(--line-2);color:var(--fg-2);border-radius:0;outline:none;resize:vertical;
+  font-family:var(--mono);font-size:11px;line-height:1.6;
+}
+.netbox:focus{border-color:var(--accent-line)}
+.netcfg summary{
+  cursor:pointer;margin-top:18px;font-family:var(--mono);font-size:8.5px;
+  letter-spacing:.2em;text-transform:uppercase;color:var(--fg-4);
+}
+.netcfg summary:hover{color:var(--fg-hi)}
+.netcfg[open] summary{margin-bottom:12px}
+
 /* ============================== responsive ============================== */
 
 @media (max-width:1000px){

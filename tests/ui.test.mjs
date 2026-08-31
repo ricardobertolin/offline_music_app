@@ -1871,6 +1871,205 @@ try {
   eq('it is still there after a reload', filtBack.kept, 'dither');
   eq('and Off puts the covers back', [filtBack.attr, filtBack.stored], ['none', 'none']);
 
+  /* ---------- 13. beaming, over the protocol itself ----------
+     beam.loopback() wires two sessions to each other inside the page: the same
+     code path a real session uses, minus the WebRTC channel. Both halves share
+     this page's one database, so what it proves is the exchange — handshake,
+     inventories, the diff, chunked transfer with its byte-count check, records,
+     handover and finish — with the receiving side correctly recognizing every
+     track as one it already has. What each commit *does* is checked separately
+     below, where a library can be taken apart and put back. */
+  await page.goto(URL);
+  await bootWait();
+  await page.evaluate(MAKE_FILES);
+
+  const beamed = await page.evaluate(async () => {
+    const dbm = await import('./js/db.js');
+    const beam = await import('./js/beam.js');
+    await dbm.wipe();
+
+    const files = await window.__mk('Beam Tapes', ['01 one.wav', '02 two.wav']);
+    const dt = new DataTransfer();
+    for (const f of files) dt.items.add(f);
+    const input = document.querySelector('#file-input');
+    input.files = dt.files;
+    input.dispatchEvent(new Event('change'));
+    await new Promise((resolve) => {
+      const wait = setInterval(async () => {
+        if ((await dbm.getAll('tracks')).length === 2) { clearInterval(wait); resolve(); }
+      }, 200);
+    });
+
+    const tracks = await dbm.getAll('tracks');
+    const audioBytes = tracks.reduce((a, t) => a + t.size, 0);
+
+    const { host, guest } = beam.loopback();
+    const failed = new Promise((_, reject) => { host.on('error', reject); guest.on('error', reject); });
+    const ready = Promise.all([
+      new Promise((r) => host.on('ready', r)),
+      new Promise((r) => guest.on('ready', r)),
+    ]);
+    const [hostReady] = await Promise.race([ready, failed]);
+
+    // Two views of one library: a real diff between them is empty. Emptying the
+    // host's view of the other side is what makes it actually send anything.
+    const agreedPlan = hostReady.summary.send.items.length;
+    host.theirs = { proto: 1, tracks: [], art: [], albums: [] };
+
+    const finished = Promise.all([
+      new Promise((r) => host.on('done', r)),
+      new Promise((r) => guest.on('done', r)),
+    ]);
+    await host.start({ mode: 'push', settings: 'none' });
+    const [hostResult, guestResult] = await Promise.race([finished, failed]);
+    const received = guest._recvBytes;
+    host.close();
+    guest.close();
+
+    return {
+      agreedPlan,
+      remote: hostReady.remote?.device || '',
+      sent: hostResult.sent,
+      added: guestResult.added,
+      skipped: guestResult.skipped,
+      failed: guestResult.failed,
+      albums: (guestResult.albums || []).map((a) => a.record.key),
+      received,
+      audioBytes,
+    };
+  }, { timeout: 120000 });
+
+  eq('two identical libraries have nothing to send', beamed.agreedPlan, 0);
+  ok('the far end introduces itself', /·/.test(beamed.remote), beamed.remote);
+  eq('both tracks go over the channel', beamed.sent, 2);
+  eq('every byte of audio arrives', beamed.received, beamed.audioBytes);
+  eq('the far end knows it already has them', beamed.skipped, 2);
+  eq('so nothing is duplicated', beamed.added, 0);
+  eq('and nothing fails on the way', beamed.failed, []);
+  eq('the record they belong to travels with them', beamed.albums.length, 1);
+
+  /* ---------- 13b. what arriving actually does to a library ----------
+     The commit half, driven directly: a track taken away and beamed back, a row
+     left without its audio and filled in, the same track offered twice, covers
+     deduped by picture rather than by id, and a dragged order remapped onto
+     rows that carry different ids on this side. */
+  const commits = await page.evaluate(async () => {
+    const dbm = await import('./js/db.js');
+    const sync = await import('./js/sync.js');
+    const out = {};
+
+    const all = await dbm.getAll('tracks');
+    const victim = all[0];
+    const packed = sync.packTrack(victim);
+    const audio = (await dbm.get('blobs', victim.id)).blob;
+    const size = audio.size;
+
+    /* gone, then beamed back */
+    await dbm.del('tracks', victim.id);
+    await dbm.del('blobs', victim.id);
+    out.added = await sync.commitTrack(packed, { audio });
+    const back = (await dbm.getAll('tracks')).find((t) => t.hash === victim.hash);
+    out.restored = {
+      title: back?.title,
+      needsAudio: back?.needsAudio,
+      analyzed: back?.analyzed,
+      lufs: back?.loudness?.integratedLufs ?? null,
+      bins: back?.loudness?.hist?.length ?? 0,
+      envelope: back?.loudness?.envelope?.length > 0,
+      bytes: (await dbm.get('blobs', back.id)).blob.size,
+      size,
+    };
+
+    /* the same one again: merge means merge */
+    out.again = await sync.commitTrack(packed, { audio });
+
+    /* a row waiting for its audio, filled in — and keeping its own edits */
+    const hollow = { ...back, title: 'Edited here', needsAudio: true };
+    await dbm.put('tracks', hollow);
+    await dbm.del('blobs', hollow.id);
+    out.filled = await sync.commitTrack(packed, { audio });
+    const fixed = await dbm.get('tracks', hollow.id);
+    out.keptEdit = fixed.title;
+    out.hasAudio = !fixed.needsAudio && !!(await dbm.get('blobs', hollow.id));
+
+    /* covers: the same picture at the same size is one cover, whoever sent it */
+    const pic = { id: 'art-remote', hash: 'picture-hash', size: 512, thumbSize: 128, quality: 0.82, mime: 'image/webp' };
+    const bytes = new Blob([new Uint8Array([1, 2, 3])]);
+    out.artFirst = await sync.commitArt(pic, { full: bytes, thumb: bytes });
+    out.artAgain = await sync.commitArt({ ...pic, id: 'art-somewhere-else' }, { full: bytes, thumb: bytes });
+    out.artCount = (await dbm.getAll('art')).length;
+    out.artUnknown = await sync.commitArt({ id: 'art-x', hash: 'never-seen', size: 512, thumbSize: 128, quality: 0.82 }, {});
+
+    /* a dragged order, remapped by content onto whatever ids live here */
+    const rows = await dbm.getAll('tracks');
+    const key = rows[0].albumKey;
+    const reversed = rows.filter((t) => t.albumKey === key).map((t) => t.hash).reverse();
+    const album = await dbm.get('albums', key);
+    await sync.commitAlbum({ ...album, name: 'Beam Tapes', sortMode: 'custom' }, reversed);
+    const after = await dbm.get('albums', key);
+    const byId = new Map(rows.map((t) => [t.id, t.hash]));
+    out.order = after.order.map((id) => byId.get(id));
+    out.reversed = reversed;
+    out.sortMode = after.sortMode;
+
+    return out;
+  }, { timeout: 60000 });
+
+  eq('a track that is gone is added back', commits.added, 'added');
+  eq('...whole', [commits.restored.needsAudio, commits.restored.analyzed], [false, true]);
+  eq('...with its audio byte for byte', commits.restored.bytes, commits.restored.size);
+  ok('...and its measurements intact',
+    commits.restored.lufs !== null && commits.restored.bins === 900 && commits.restored.envelope,
+    `${commits.restored.lufs} LUFS, ${commits.restored.bins} bins`);
+  eq('offering it a second time changes nothing', commits.again, 'skipped');
+  eq('a row with no audio is filled in', commits.filled, 'filled');
+  eq('...keeping the edit made on this side', commits.keptEdit, 'Edited here');
+  ok('...and holding the audio afterwards', commits.hasAudio);
+  eq('the same cover from another device is one cover', commits.artAgain, commits.artFirst);
+  eq('...stored once', commits.artCount, 1);
+  eq('a cover with no bytes and no match points at nothing', commits.artUnknown, null);
+  eq('a dragged order lands on the right tracks', commits.order, commits.reversed);
+  eq('...as a custom order', commits.sortMode, 'custom');
+
+  /* ---------- 13c. the beam dialogs ----------
+     Everything up to the point where a network would be needed: the panel, the
+     code box, and the choice between beaming a record and packing it. */
+  const dialogs = await page.evaluate(async () => {
+    document.querySelector('.tab[data-view="settings"]').click();
+    await new Promise((r) => setTimeout(r, 200));
+    const panel = document.querySelector('#beam-panel');
+    const unsupported = !document.querySelector('#beam-unsupported').hidden;
+
+    document.querySelector('#btn-beam-join').click();
+    await new Promise((r) => setTimeout(r, 150));
+    const dlg = document.querySelector('#dlg');
+    const joinOpen = dlg.open;
+    const hasInput = !!dlg.querySelector('#beam-code-input');
+    dlg.close();
+    await new Promise((r) => setTimeout(r, 100));
+
+    // The record's own Send…, which is where the choice between the two roads is.
+    document.querySelector('.tab[data-view="tracks"]').click();
+    await new Promise((r) => setTimeout(r, 150));
+    const id = document.querySelector('#track-list .track')?.dataset.id;
+    document.querySelector(`.track[data-id="${id}"]`).dispatchEvent(
+      new MouseEvent('contextmenu', { bubbles: true, clientX: 40, clientY: 40 }));
+    await new Promise((r) => setTimeout(r, 150));
+    const send = [...document.querySelectorAll('.menu-item')].find((b) => b.textContent.includes('Send'));
+    send.click();
+    await new Promise((r) => setTimeout(r, 200));
+    const ways = [...document.querySelectorAll('#dlg .send-way')].map((b) => ({
+      act: b.dataset.act, disabled: b.disabled, name: b.querySelector('.way-name').textContent.trim(),
+    }));
+    document.querySelector('#dlg').close();
+    return { panel: !!panel, unsupported, joinOpen, hasInput, ways };
+  });
+  ok('Settings carries a Beam panel', dialogs.panel);
+  ok('and headless Chrome can beam at all', !dialogs.unsupported);
+  ok('Join a beam asks for a code', dialogs.joinOpen && dialogs.hasInput);
+  eq('Send offers both roads', dialogs.ways.map((w) => w.act), ['beam', 'zip']);
+  ok('with beaming available', dialogs.ways[0] && !dialogs.ways[0].disabled, dialogs.ways[0]?.name);
+
   console.log('\n--- console output from the page ---');
   page.dumpLogs();
   console.log(fails ? `\n${fails} check(s) failed` : '\nall UI checks passed');

@@ -4,6 +4,9 @@ import * as db from './db.js';
 import * as lib from './library.js';
 import * as source from './source.js';
 import * as archive from './archive.js';
+import * as beam from './beam.js';
+import * as sync from './sync.js';
+import { QR } from './qr.js';
 import { Player } from './audio/player.js';
 import { artUrl, normalizeBackdrop } from './image.js';
 import { opusAvailable } from './audio/oggopus.js';
@@ -138,6 +141,8 @@ async function boot() {
   wirePlayer();
   registerSW();
   handleLaunchFiles();
+  handleBeamLink();
+  window.addEventListener('hashchange', handleBeamLink);
   bindVersion();
   updateBackupEstimate();
   warnStaleFolders();
@@ -535,6 +540,9 @@ function appMenuItems() {
     '-',
     { label: 'Add album…', sub: 'From a folder or a .zip', run: () => $('#btn-add-album').click() },
     { label: 'Add tracks…', run: () => $('#file-input').click() },
+    '-',
+    { label: 'Beam & sync…', sub: 'Move records between two devices', run: () => openBeam({ host: true }) },
+    { label: 'Join a beam…', sub: 'With a code from the other device', run: () => openBeam({ host: false }) },
     '-',
     { label: 'Reload the app', sub: 'Everything stays where it is', run: () => location.reload() },
   ].filter(Boolean);
@@ -2376,6 +2384,7 @@ function bindSettings() {
     updateBackupEstimate();
   });
   $('#set-backup-originals').addEventListener('change', updateBackupEstimate);
+  bindBeam();
   $('#btn-backup').addEventListener('click', runBackup);
   $('#btn-restore').addEventListener('click', () => $('#backup-input').click());
   $('#backup-input').addEventListener('change', async (e) => {
@@ -2469,22 +2478,65 @@ const canShareFiles = (file) => {
 };
 
 /**
- * Pack tracks into a bundle and offer it to whatever can carry it.
+ * Send tracks somewhere else. Two roads, and the choice comes first because
+ * they cost very different things: a beam streams the tracks straight into the
+ * other device and packs nothing, while a bundle is a real file that has to be
+ * built in full — several hundred megabytes of it — before anything can carry
+ * it. Packing that only to have the user pick the other option would be a slow
+ * way of doing nothing.
+ */
+function sendTracks(ids, label) {
+  if (!ids.length) { toast('Nothing to send'); return; }
+  // Linked audio is read out of its folder on the way, so the only tracks that
+  // cannot travel whole are the ones this device cannot read at all.
+  const hollow = state.tracks.filter((t) => ids.includes(t.id) && (t.needsAudio || t.needsRelink)).length;
+  const bytes = state.tracks.filter((t) => ids.includes(t.id)).reduce((a, t) => a + (t.size || 0), 0);
+  const dlg = $('#dlg');
+
+  dlg.innerHTML = `<div class="dlg-body">
+    <h3>Send ${escapeHtml(label)}</h3>
+    <p class="muted small">${ids.length} track${ids.length === 1 ? '' : 's'} · ${fmtBytes(bytes)}</p>
+    ${hollow ? `<p class="hint">${hollow} of them have no audio on this device and will go as
+    measurements only.</p>` : ''}
+    <div class="send-ways">
+      <button class="send-way" data-act="beam"${beam.available() ? '' : ' disabled'}>
+        <span class="way-name">Beam it to a device</span>
+        <span class="way-sub">Straight into the other browser over a direct connection. Nothing is
+        packed, nothing is uploaded, and anything it already has is skipped.</span>
+      </button>
+      <button class="send-way" data-act="zip">
+        <span class="way-name">Pack a .zip</span>
+        <span class="way-sub">An ordinary archive carrying the audio, the covers and every
+        measurement — to share, to save, or to keep.</span>
+      </button>
+    </div>
+    ${beam.available() ? '' : '<p class="hint">This browser has no WebRTC, so beaming is not available here.</p>'}
+    <div class="actions">
+      <div class="grow"></div>
+      <button class="btn" data-act="close">Cancel</button>
+    </div>
+  </div>`;
+
+  dlg.onkeydown = null;
+  dlg.onclick = (e) => {
+    const act = e.target.closest('[data-act]')?.dataset.act;
+    if (!act) return;
+    if (act === 'close') { dlg.close(); return; }
+    if (act === 'beam') { dlg.close(); openBeam({ host: true, only: ids, label }); return; }
+    if (act === 'zip') { dlg.close(); packBundle(ids, label); }
+  };
+  dlg.showModal();
+}
+
+/**
+ * Pack a bundle and offer it to whatever can carry it.
  *
  * The build and the send are deliberately two steps. `navigator.share` has to
  * be called from a user gesture, and packing a few hundred megabytes takes far
  * longer than a gesture survives — so the file is made first, behind the
  * progress bar, and the dialog's own button is the gesture that sends it.
  */
-async function sendTracks(ids, label) {
-  if (!ids.length) { toast('Nothing to send'); return; }
-  // Linked audio is read out of its folder and packed in, so the only tracks
-  // that cannot travel whole are the ones this device cannot read at all.
-  const hollow = state.tracks.filter((t) => ids.includes(t.id) && (t.needsAudio || t.needsRelink)).length;
-  if (hollow) {
-    toast(`${hollow} track${hollow === 1 ? '' : 's'} have no audio on this device and will go as measurements only`);
-  }
-
+async function packBundle(ids, label) {
   const ctrl = progressStart(`Packing ${label}`);
   let file;
   try {
@@ -2552,6 +2604,453 @@ function openSendDialog(file, label, count) {
     }
   };
   dlg.showModal();
+}
+
+/* =================================== beam ================================== */
+
+/* Two devices, one channel — see beam.js for the wire and sync.js for what the
+   two of them actually say to each other. Everything here is the dialog they
+   are driven from: one modal, re-rendered as the session moves through
+   waiting → connected → running → done. */
+
+/** The live session, and what is on screen about it. One at a time. */
+let session = null;
+let beamUi = null;
+
+/** Settings → Beam: the two entry points, and the network box behind them. */
+function bindBeam() {
+  const panel = $('#beam-panel');
+  if (!panel) return;
+
+  if (!beam.available()) {
+    $('#beam-unsupported').hidden = false;
+    $('#btn-beam-host').disabled = true;
+    $('#btn-beam-join').disabled = true;
+    return;
+  }
+
+  $('#btn-beam-host').addEventListener('click', () => openBeam({ host: true }));
+  $('#btn-beam-join').addEventListener('click', () => openBeam({ host: false }));
+
+  const box = $('#beam-net-config');
+  const seed = JSON.stringify({ iceServers: [...beam.DEFAULT_ICE_SERVERS, beam.TURN_EXAMPLE] }, null, 2);
+  let stored = null;
+  try { stored = localStorage.getItem(beam.RTC_STORAGE_KEY); } catch { /* private mode */ }
+  box.value = stored || seed;
+
+  $('#btn-beam-net-save').addEventListener('click', () => {
+    const res = beam.saveRtcConfig(box.value);
+    $('#beam-net-status').textContent = res.ok
+      ? `${res.cleared ? 'Cleared — back to the defaults. ' : 'Saved. '}It applies to the next session you start.`
+      : res.error;
+  });
+  $('#btn-beam-net-reset').addEventListener('click', () => {
+    beam.saveRtcConfig('');
+    box.value = seed;
+    $('#beam-net-status').textContent = 'Reset to the defaults.';
+  });
+  $('#btn-beam-net-test').addEventListener('click', testBeamNetwork);
+}
+
+/** Gather ICE candidates and say plainly what this network can do. Worth
+ *  running before blaming the app: a beam that cannot get through symmetric NAT
+ *  fails at the connection, not at the music. */
+async function testBeamNetwork() {
+  const el = $('#beam-net-status');
+  el.textContent = 'Testing…';
+  const cfg = beam.loadRtcConfig();
+  const res = await beam.probeIce(cfg.iceServers);
+  const hasTurn = /turns?:/.test(JSON.stringify(cfg.iceServers || []));
+  if (res.error) { el.textContent = `Could not test: ${res.error}`; return; }
+  el.textContent = res.relay
+    ? 'A TURN relay answered — beams should connect on any network.'
+    : res.srflx
+      ? `STUN answered, so this device knows its public address. ${hasTurn
+        ? 'The configured relay did not answer, so a strict network will still fail.'
+        : 'That is enough on most home networks, but not on mobile carriers or strict firewalls — those need a TURN relay.'}`
+      : 'Neither STUN nor TURN answered. Beaming will only work between devices on the same network, if at all.';
+}
+
+/**
+ * Open the beam dialog.
+ * @param {object} o
+ * @param {boolean} o.host  true starts a session others join; false asks for a code
+ * @param {string[]|null} [o.only] track ids — a beam of one record rather than a sync
+ * @param {string} [o.label] what to call that scope on screen
+ * @param {string} [o.code] join this code straight away (a #beam= link)
+ */
+async function openBeam({ host = true, only = null, label = '', code = '' } = {}) {
+  if (!beam.available()) { toast('This browser has no WebRTC, so it cannot beam', 'err'); return; }
+  if (session) { toast('A beam is already open'); return; }
+
+  const dlg = $('#dlg');
+  beamUi = {
+    view: host ? 'starting' : (code ? 'starting' : 'code'),
+    host,
+    only,
+    label,
+    code,
+    // A scoped beam is a one-way send by definition: you picked what goes.
+    mode: only ? 'push' : 'mirror',
+    settings: 'none',
+    status: 'Reaching the broker…',
+    error: '',
+    remote: null,
+    summary: null,
+    path: '',
+    result: null,
+  };
+  dlg.onkeydown = null;
+  renderBeam();
+  dlg.showModal();
+  // Escape closes a <dialog> on its own; a session left running behind it would
+  // keep sending into a dialog nobody can see.
+  dlg.addEventListener('close', () => { if (beamUi) endBeam(); }, { once: true });
+
+  if (host) await startHosting();
+  else if (code) await startJoining(code);
+}
+
+async function startHosting() {
+  try {
+    const s = await beam.host();
+    if (!beamUi) { s.close(); return; }         // dialog closed while we waited
+    wireSession(s);
+    beamUi.view = 'waiting';
+    beamUi.status = 'Waiting for the other device…';
+    renderBeam();
+  } catch (err) {
+    showBeamError(err);
+  }
+}
+
+async function startJoining(code) {
+  beamUi.view = 'starting';
+  beamUi.status = 'Reaching the broker…';
+  renderBeam();
+  try {
+    const s = await beam.join(code);
+    if (!beamUi) { s.close(); return; }
+    wireSession(s);
+    beamUi.view = 'waiting';
+    beamUi.status = 'Connecting to the other device…';
+    renderBeam();
+  } catch (err) {
+    showBeamError(err);
+  }
+}
+
+/** Everything the session says, turned into what the dialog shows. */
+function wireSession(s) {
+  session = s;
+  s.on('status', (text) => { if (beamUi && beamUi.view !== 'running') { beamUi.status = text; renderBeam(); } })
+    .on('peer', (remote) => { if (beamUi) { beamUi.remote = remote; renderBeam(); } })
+    .on('path', (kind) => { if (beamUi) { beamUi.path = kind; renderBeam(); } })
+    .on('ready', (info) => {
+      if (!beamUi) return;
+      beamUi.remote = info.remote;
+      beamUi.summary = beamUi.only
+        ? sync.summarize(info.mine, info.theirs, { only: beamUi.only })
+        : info.summary;
+      beamUi.view = 'ready';
+      renderBeam();
+    })
+    .on('planned', () => { if (beamUi) { beamUi.view = 'running'; beamUi.phase = 'waiting'; renderBeam(); } })
+    .on('phase', (phase) => {
+      if (!beamUi) return;
+      // Sending and receiving are two bars, one after the other, not one bar
+      // that mysteriously goes backwards halfway through a mirror.
+      Object.assign(beamUi, { view: 'running', phase, progress: 0, sub: '' });
+      renderBeam();
+    })
+    // Straight at the two elements: re-rendering the dialog on every chunk would
+    // rebuild the DOM under the user's cursor a hundred times a second. The
+    // numbers are kept too, so a re-render for some other reason does not drop
+    // the bar back to zero.
+    .on('progress', (fraction, sub) => {
+      if (!beamUi) return;
+      beamUi.progress = Math.max(0, Math.min(1, fraction || 0));
+      if (sub) beamUi.sub = sub;
+      const bar = $('#beam-bar');
+      if (bar) bar.style.width = `${beamUi.progress * 100}%`;
+      const el = $('#beam-sub');
+      if (el && sub) el.textContent = sub;
+    })
+    .on('done', (result) => { finishBeam(result); })
+    .on('error', (err) => { showBeamError(err); });
+}
+
+/** Bring in what arrived. Tracks were committed as they landed — this is the
+ *  part that only makes sense once they all have: the records they belong to,
+ *  and the library the user is looking at. */
+async function finishBeam(result) {
+  session?.close();
+  session = null;
+  if (!beamUi) return;
+  beamUi.view = 'done';
+  beamUi.result = result;
+  renderBeam();
+
+  if (result.added || result.filled) {
+    await lib.refreshAllAlbums();
+    for (const a of result.albums || []) {
+      try { await sync.commitAlbum(a.record, a.orderHashes); } catch { /* a record's name is not worth failing over */ }
+    }
+    await reload();
+  }
+  if (result.settings) {
+    state.settings = await db.settings();
+    applyTheme();
+    applyBackdropImage();
+    applySettingsToUI();
+    renderSwatches();
+    renderBackdrops();
+    renderCoverFilters();
+    player.setLimiter(state.settings.limiter);
+    renderAll();
+  }
+  renderBeam();
+}
+
+function showBeamError(err) {
+  session?.close();
+  session = null;
+  if (!beamUi) { toast(err.message, 'err'); return; }
+  beamUi.view = 'error';
+  beamUi.error = err.message || String(err);
+  renderBeam();
+}
+
+/** Tear the session down, whichever way the dialog was left. */
+function endBeam() {
+  const running = beamUi && (beamUi.view === 'running');
+  beamUi = null;
+  if (session) {
+    if (running) session.abort('the other device closed the beam');
+    else session.close();
+    session = null;
+  }
+}
+
+const BEAM_MODES = [
+  { key: 'mirror', label: 'Both ways', sub: 'Each device ends up with everything the other has' },
+  { key: 'push', label: 'Send only', sub: 'They get what they are missing; nothing comes back' },
+  { key: 'pull', label: 'Receive only', sub: 'You get what you are missing; nothing goes out' },
+];
+
+const BEAM_SETTINGS = [
+  { key: 'none', label: 'Leave them' },
+  { key: 'push', label: 'Send mine' },
+  { key: 'pull', label: 'Take theirs' },
+];
+
+const segmented = (name, options, current) => `<div class="segmented" role="radiogroup">
+  ${options.map((o) => `<button type="button" role="radio" data-${name}="${o.key}"
+      aria-checked="${o.key === current}" class="${o.key === current ? 'is-active' : ''}"
+      >${escapeHtml(o.label)}</button>`).join('')}
+</div>`;
+
+function renderBeam() {
+  if (!beamUi) return;
+  const dlg = $('#dlg');
+  const u = beamUi;
+  const body = {
+    starting: beamStarting,
+    code: beamCodeEntry,
+    waiting: beamWaiting,
+    ready: beamReady,
+    running: beamRunning,
+    done: beamDone,
+    error: beamErrorView,
+  }[u.view]?.(u) || '';
+
+  dlg.innerHTML = `<div class="dlg-body">${body}</div>`;
+  dlg.onclick = onBeamClick;
+  dlg.onkeydown = (e) => {
+    // Typing a code and pressing Enter is the whole interaction on the joining
+    // device; making it reach for the mouse for that would be silly.
+    if (e.key === 'Enter' && e.target.id === 'beam-code-input') {
+      e.preventDefault();
+      onBeamClick({ target: dlg.querySelector('[data-act="join"]') });
+    }
+  };
+  if (u.view === 'code') setTimeout(() => $('#beam-code-input')?.focus(), 0);
+}
+
+const beamTitle = (u) => (u.only
+  ? `Beam ${escapeHtml(u.label || 'a selection')}`
+  : 'Beam &amp; sync');
+
+const beamStarting = (u) => `<h3>${beamTitle(u)}</h3>
+  <p class="muted small">${escapeHtml(u.status)}</p>
+  <div class="actions"><div class="grow"></div>
+    <button class="btn" data-act="close">Cancel</button></div>`;
+
+const beamCodeEntry = (u) => `<h3>Join a beam</h3>
+  <p class="hint">Start a beam on the other device — Settings → Beam &amp; sync → <b>Start a
+  beam</b> — and type the six-character code it shows.</p>
+  <div class="field span2">
+    <label for="beam-code-input">Code</label>
+    <input id="beam-code-input" class="text beam-input" type="text" inputmode="latin"
+           autocomplete="off" spellcheck="false" maxlength="7" placeholder="ABC-DEF">
+  </div>
+  <div class="actions">
+    <button class="btn primary" data-act="join">Connect</button>
+    <div class="grow"></div>
+    <button class="btn" data-act="close">Cancel</button>
+  </div>`;
+
+function beamWaiting(u) {
+  if (!u.host) {
+    return `<h3>${beamTitle(u)}</h3>
+      <p class="muted small">${escapeHtml(u.status)}</p>
+      <p class="hint">Both devices have to be on a network that lets them reach each other. If this
+      hangs, the sending device's <b>Network</b> box is where a TURN relay goes.</p>
+      <div class="actions"><div class="grow"></div>
+        <button class="btn" data-act="close">Cancel</button></div>`;
+  }
+  const link = beam.beamLink(session?.code || '');
+  let qr = '';
+  try { qr = QR.toDataUrl(link, { border: 2, dark: '#0a0a0b', light: '#ffffff' }); } catch { /* link too long to draw */ }
+  return `<h3>${beamTitle(u)}</h3>
+    <p class="hint">On the other device, open this app and either scan the code or type it into
+    Settings → Beam &amp; sync → <b>Join a beam</b>.</p>
+    <div class="beam-pair">
+      ${qr ? `<img class="beam-qr" src="${qr}" alt="Link to this beam, as a QR code">` : ''}
+      <div>
+        <div class="beam-code">${escapeHtml(beam.prettyCode(session?.code || ''))}</div>
+        <p class="hint beam-link">${escapeHtml(link)}</p>
+        <div class="row"><button class="btn ghost" data-act="copy">Copy the link</button></div>
+      </div>
+    </div>
+    ${u.only ? `<p class="hint">${u.only.length} track${u.only.length === 1 ? '' : 's'} are waiting
+    to go. Anything the other device already has is skipped.</p>` : ''}
+    <p class="muted small">${escapeHtml(u.status)}</p>
+    <div class="actions"><div class="grow"></div>
+      <button class="btn" data-act="close">Cancel</button></div>`;
+}
+
+function beamReady(u) {
+  const s = u.summary || { send: { items: [], bytes: 0, fills: 0 }, receive: { items: [], bytes: 0, fills: 0 }, shared: 0 };
+  const remote = u.remote || { device: 'the other device', version: '?', tracks: 0 };
+  const line = (plan) => `${plan.items.length} track${plan.items.length === 1 ? '' : 's'}`
+    + (plan.bytes ? ` · ${fmtBytes(plan.bytes)}` : '')
+    + (plan.fills ? ` · ${plan.fills} waiting for audio` : '');
+
+  return `<h3>${escapeHtml(remote.device)}</h3>
+    <p class="muted small">Offpress v${escapeHtml(remote.version)} · ${remote.tracks} track${remote.tracks === 1 ? '' : 's'}${u.path ? ` · ${escapeHtml(u.path)}` : ''}</p>
+    <div class="kv">
+      <div>They lack</div><div>${line(s.send)}</div>
+      <div>You lack</div><div>${line(s.receive)}</div>
+      <div>In common</div><div>${s.shared} track${s.shared === 1 ? '' : 's'}</div>
+    </div>
+    ${u.host ? `
+      ${u.only ? '' : `<div class="field"><label>Direction</label>
+        ${segmented('mode', BEAM_MODES, u.mode)}
+        <p class="hint">${escapeHtml(BEAM_MODES.find((m) => m.key === u.mode)?.sub || '')}</p></div>`}
+      <div class="field"><label>Settings</label>
+        ${segmented('bsettings', BEAM_SETTINGS, u.settings)}
+        <p class="hint">Loudness targets, quality profile, artwork sizes and the whole look,
+        including the backdrop picture. Volume, shuffle and the phone/desktop layout choices stay
+        where they are.</p></div>
+      <p class="hint">Nothing here is ever removed: a beam only adds tracks the other side is
+      missing and fills in rows that have no audio yet.</p>
+      <div class="actions">
+        <button class="btn primary" data-act="start">${u.only ? 'Send them' : 'Start'}</button>
+        <div class="grow"></div>
+        <button class="btn" data-act="close">Cancel</button>
+      </div>`
+    : `<p class="hint">Connected. ${escapeHtml(remote.device)} decides what moves — the device that
+      started the beam is the one holding the button.</p>
+      <div class="actions"><div class="grow"></div>
+        <button class="btn" data-act="close">Cancel</button></div>`}`;
+}
+
+const beamRunning = (u) => `<h3>${u.phase === 'sending' ? 'Sending' : u.phase === 'receiving' ? 'Receiving' : 'Beaming'}</h3>
+  <p class="muted small">${escapeHtml(u.remote?.device || 'the other device')}${u.path ? ` · ${escapeHtml(u.path)}` : ''}</p>
+  <div class="bar"><div class="bar-fill" id="beam-bar" style="width:${(u.progress || 0) * 100}%"></div></div>
+  <p class="progress-sub" id="beam-sub">${escapeHtml(u.sub || (u.phase === 'waiting' ? 'Waiting for the other device…' : ''))}</p>
+  <p class="hint">Every track is written as it lands, so stopping halfway loses nothing that has
+  already arrived — start the beam again and it picks up where it left off.</p>
+  <div class="actions"><div class="grow"></div>
+    <button class="btn danger" data-act="stop">Stop</button></div>`;
+
+function beamDone(u) {
+  const r = u.result || {};
+  const bits = [];
+  if (r.added) bits.push(`${r.added} track${r.added === 1 ? '' : 's'} added here`);
+  if (r.filled) bits.push(`${r.filled} filled in with audio`);
+  if (r.sent) bits.push(`${r.sent} sent`);
+  if (r.settings) bits.push('settings taken');
+  if (r.skipped) bits.push(`${r.skipped} already here`);
+  return `<h3>Beam finished</h3>
+    <p class="muted small">${bits.length ? escapeHtml(bits.join(' · ')) : 'Both devices already agreed — nothing had to move.'}</p>
+    ${r.failed?.length ? `<p class="hint">${r.failed.length} did not make it:<br>${escapeHtml(r.failed.slice(0, 5).join('; '))}</p>` : ''}
+    <div class="actions"><div class="grow"></div>
+      <button class="btn primary" data-act="close">Close</button></div>`;
+}
+
+const beamErrorView = (u) => `<h3>Beam failed</h3>
+  <p class="muted small">${escapeHtml(u.error)}</p>
+  <p class="hint">Codes only live as long as the tab that made them. If the connection itself never
+  opened, this network probably needs a TURN relay — Settings → Beam &amp; sync → Network.</p>
+  <div class="actions"><div class="grow"></div>
+    <button class="btn" data-act="close">Close</button></div>`;
+
+async function onBeamClick(e) {
+  const dlg = $('#dlg');
+  const btn = e.target.closest('[data-act],[data-mode],[data-bsettings]');
+  if (!btn || !beamUi) return;
+
+  if (btn.dataset.mode) { beamUi.mode = btn.dataset.mode; renderBeam(); return; }
+  if (btn.dataset.bsettings) { beamUi.settings = btn.dataset.bsettings; renderBeam(); return; }
+
+  switch (btn.dataset.act) {
+    case 'close':
+      dlg.close();                    // the close listener tears the session down
+      return;
+    case 'stop':
+      session?.abort('stopped on the other device');
+      session = null;
+      beamUi.view = 'error';
+      beamUi.error = 'Stopped. Everything that had already arrived was kept.';
+      renderBeam();
+      return;
+    case 'copy': {
+      const link = beam.beamLink(session?.code || '');
+      try { await navigator.clipboard.writeText(link); toast('Link copied'); }
+      catch { toast('Could not reach the clipboard — the link is on screen', 'err'); }
+      return;
+    }
+    case 'join': {
+      const code = $('#beam-code-input')?.value || '';
+      if (!beam.isCode(code)) { toast('A code is six letters and digits', 'err'); return; }
+      beamUi.code = beam.normalizeCode(code);
+      await startJoining(beamUi.code);
+      return;
+    }
+    case 'start':
+      try {
+        await session.start({
+          mode: beamUi.only ? 'push' : beamUi.mode,
+          only: beamUi.only,
+          settings: beamUi.settings,
+        });
+      } catch (err) { showBeamError(err); }
+      return;
+    default:
+  }
+}
+
+/** A #beam=ABC123 link, opened on the receiving device. Also bound to
+ *  hashchange: following the link with the app already open changes the hash
+ *  without reloading anything, and that is the common case on a phone. */
+function handleBeamLink() {
+  const code = beam.parseBeamHash();
+  if (!code || session || beamUi) return;
+  history.replaceState(null, '', location.pathname + location.search);
+  showView('settings');
+  openBeam({ host: false, code });
 }
 
 /**

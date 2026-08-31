@@ -4,7 +4,7 @@
 
 // Keep in step with APP_VERSION in js/util.js — a worker cannot import from it,
 // and Settings → Version prints both so a mismatch means "reload, you are stale".
-const VERSION = 'v2.8.0';
+const VERSION = 'v2.9.0';
 const SHELL = `shell-${VERSION}`;
 const SHARE = 'share-inbox';
 // Webfonts are cross-origin and versioned by URL, so they get their own cache
@@ -32,6 +32,11 @@ const ASSETS = [
   './js/zipwrite.js',
   './js/source.js',
   './js/archive.js',
+  './js/pack.js',
+  './js/beam.js',
+  './js/sync.js',
+  './js/qr.js',
+  './js/vendor/peerjs.min.js',
   './js/report.js',
   './js/audio/decode.js',
   './js/audio/player.js',

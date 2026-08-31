@@ -5,6 +5,9 @@ An installable PWA that turns a pile of audio files into a consistent music libr
 the same normalized square.** Everything happens on the device: no uploads, no server,
 no accounts. The service worker makes the app itself work with no network at all.
 
+Two devices can be kept in step without one either: **Beam & sync** opens a direct
+connection between the two browsers and moves only what is missing, audio included.
+
 Static files only, so it deploys to GitHub Pages as-is.
 
 ## What it actually does
@@ -223,11 +226,15 @@ of loose files.
 ### Sending a record to someone
 
 **Configure → Send this record**, **Send…** in the track selection, or **Send…** in a
-track's details packs the chosen tracks into a bundle: the audio, the covers and every
-loudness and quality measurement, in an ordinary `.zip`. Where the browser supports it the
-bundle goes straight into the OS share sheet (`navigator.share`), so on Android or Windows
-it is one tap to AirDrop, Nearby Share, a messenger or a mail draft. Everywhere else it is
-saved as a file and you send it however you already do.
+track's details offers two roads, and the choice comes first because they cost different
+things. **Beam it to a device** streams the tracks straight into the other browser and packs
+nothing — see below. **Pack a .zip** builds a bundle: the audio, the covers and every
+loudness and quality measurement, in an ordinary archive.
+
+Where the browser supports it the bundle goes straight into the OS share sheet
+(`navigator.share`), so on Android or Windows it is one tap to AirDrop, Nearby Share, a
+messenger or a mail draft. Everywhere else it is saved as a file and you send it however you
+already do.
 
 Whoever opens it in Offpress gets the record already analyzed, because the measurements
 travel with it and nothing has to be decoded again. Anything they already own is skipped by
@@ -239,6 +246,79 @@ A bundle is not a backup of the machine it came from. It carries no settings, no
 picture and no folder links, and a linked track's audio is read out of its folder and packed
 in — the person receiving it cannot reach your disk. A shared record can only ever merge
 into a library, never replace one.
+
+### Beaming and syncing between devices
+
+**Settings → Beam & sync** connects two browsers directly and moves what is missing between
+them. It is how a library built on a desktop gets onto a phone, and how the phone's imports
+come back the other way.
+
+One device presses **Start a beam** and shows a six-character code, a link and a QR; the
+other scans it or types the code into **Join a beam**. Then the device that started it picks
+a direction — **Both ways**, **Send only** or **Receive only** — and optionally whether the
+settings travel too.
+
+What makes this worth having over carrying a `.zip` across is that a sync is a diff, not a
+snapshot. Both sides first exchange one small line per track — the content hash, the size,
+and whether the audio is actually there — and only the difference moves. So:
+
+- Running it twice sends nothing the second time.
+- Stopping halfway loses nothing that already arrived: each track is committed as it lands,
+  and starting again picks up where it stopped.
+- A row restored from a measurements-only backup gets filled in by whichever device still
+  has the file, keeping the edits made on the row that was waiting.
+- Covers are matched by picture and size, so an album's artwork crosses once.
+- A track order you dragged travels as content hashes and is remapped onto the rows on the
+  other side, which carry their own ids.
+- A sync only ever adds. Deleting a record here never deletes it there — "I removed that
+  album" and "I have not imported it yet" look identical from across the wire.
+
+Settings travel as a separate choice: loudness targets, quality profile, artwork sizes and
+the whole appearance including the backdrop picture. Volume, shuffle, repeat and the
+phone/desktop column choices stay where they are, because they describe the device rather
+than the taste.
+
+**How it connects.** The audio goes browser to browser over a WebRTC data channel — nothing
+is uploaded, and on the same Wi-Fi it runs at network speed. What still needs a network is
+the introduction: a [PeerJS](https://peerjs.com) broker relays a few hundred bytes of
+session description so the two peers can find each other, and never sees a byte of music.
+The library is vendored in `js/vendor/`, so nothing is fetched from a CDN at runtime.
+
+Connectivity is the one part that can genuinely fail. STUN (configured by default) is enough
+on most home networks; symmetric NAT — normal on mobile carriers and in offices — needs a
+**TURN** relay, which forwards the traffic. None ships with the app on purpose: a relay costs
+real bandwidth, so free public ones die or rotate credentials, and a hardcoded dead relay
+looks configured while failing exactly when it is needed. The **Network** box inside the panel
+tests what your network can do and takes your own servers, written to
+`localStorage['offpress.rtc']`:
+
+```json
+{
+  "iceServers": [
+    { "urls": "stun:stun.l.google.com:19302" },
+    {
+      "urls": ["turn:turn.example.com:3478",
+               "turns:turn.example.com:5349?transport=tcp"],
+      "username": "your-username",
+      "credential": "your-password"
+    }
+  ],
+  "forceRelay": false,
+  "server": { "host": "peer.example.com", "port": 443, "secure": true }
+}
+```
+
+`forceRelay` sets `iceTransportPolicy: 'relay'`, which is how you prove your own TURN server
+works. `server` points the signalling at your own
+[peerjs-server](https://github.com/peers/peerjs-server) instead of the public broker — with
+one on the LAN, a beam needs no internet at all. Self-hosting
+[coturn](https://github.com/coturn/coturn) is the durable fix for the relay; `turns:` on port
+443 is what gets through the strictest firewalls. Settings are per browser, so the other
+device needs its own.
+
+The wire lives in `js/beam.js`, what the two devices say to each other in `js/sync.js`. The
+protocol runs over `beam.loopback()` in the tests: two sessions wired to each other inside
+one page, through the same code path a real session uses.
 
 ### Linked folders
 
@@ -280,8 +360,8 @@ zipped album orders and names itself exactly like a real folder would.
   and *below quality*, plus multi-select for bulk artist edits and deletion
 - **Quality** — library statistics, loudness distribution, and the batch normalizer
 - **Settings** — appearance and cover filter, backdrop, target loudness and ceiling,
-  track/album/off mode, limiter, encoding target, artwork sizes, backup, storage, and a
-  **Version** panel at the foot
+  track/album/off mode, limiter, encoding target, artwork sizes, backup, **Beam & sync**,
+  storage, and a **Version** panel at the foot
 
 **Version** prints the build you are running and the offline cache the service worker is
 actually serving. When those two disagree you are looking at stale code, which is the
@@ -312,13 +392,20 @@ BS.1770-4, check the EBU Tech 3341 calibration (a full-scale 1 kHz stereo sine r
 0.0 LUFS, a −23 dBFS one reads −23.0), prove the gates actually gate, and round-trip the
 Ogg muxer, WAV writer and the ID3 / FLAC / MP4 / Ogg parsers. They also build real ZIP
 archives with Node's zlib and read them back through `js/zip.js`, covering store, deflate,
-ZIP64, UTF-8 names, trailing comments and corrupt entries.
+ZIP64, UTF-8 names, trailing comments and corrupt entries. The sync checks run the beam's
+whole decision — what travels, what is skipped, what a hollow row fills in, how covers are
+matched — as pure functions, with no browser and no peer.
 
 The UI test imports synthetic files into a real IndexedDB, then exercises opening a
 record, the Configure menu, every sort mode, drag-to-reorder, renaming, multi-select with
 shift-ranges, bulk deletion, record deletion, artwork ownership, tag editing (including a
 track moving between records) and importing a record from a .zip — checking along the way
-that no audio blobs or covers are left behind.
+that no audio blobs or covers are left behind. It also runs a whole beam over
+`beam.loopback()`, with real audio going through the chunker and its byte-count check, and
+then takes the library apart to prove what arriving does to it: a track added back whole
+with its histogram, a row without audio filled in while keeping the edit made on this side,
+the same cover recognized as one cover, and a dragged order remapped onto local ids. What
+that leaves untested is the WebRTC channel itself, which needs two devices.
 
 On `localhost` the service worker fetches from the network first, so a reload always
 shows the code you just edited; on a real host it stays cache-first for offline use.
@@ -337,7 +424,9 @@ API, so that option only appears on desktop Chromium; backup and restore work ev
 though without the API the archive is downloaded rather than streamed to a chosen file.
 Handing a bundle to the OS share sheet needs `navigator.share` with file support — Android
 Chrome, iOS Safari, and Chrome and Edge on Windows have it, Firefox and Linux do not, and
-there the bundle is saved instead.
+there the bundle is saved instead. Beaming needs WebRTC data channels, which every current
+browser has (Safari 16+ included); where it is missing the panel says so and the `.zip` road
+is still there.
 
 ## Layout
 
@@ -347,6 +436,8 @@ js/app.js             UI                   js/library.js      import, albums, jo
 js/db.js              IndexedDB            js/metadata.js     ID3 / MP4 / FLAC / Ogg / WAV tags
 js/image.js           artwork pipeline     js/zip.js          ZIP reader (store/deflate/ZIP64)
 js/zipwrite.js        ZIP writer (stream)  js/archive.js      backup + restore
+js/pack.js            typed arrays in JSON js/beam.js         WebRTC session + wire
+js/sync.js            inventory, diff, merge                 js/qr.js  pairing QR
 js/source.js          stored vs linked     js/report.js       library aggregates
 js/dsp/loudness.js    BS.1770-4            js/dsp/quality.js  spectrum, clipping, scoring
 js/dsp/analyzer-worker.js                  off-main-thread analysis
@@ -368,4 +459,8 @@ js/audio/wav.js       PCM writer           tests/             node test scripts
   profile or a new machine.
 - A directory handle belongs to the browser that created it, so linked folders cannot
   travel in a backup. Those rows are restored with their measurements and wait to be
-  linked again.
+  linked again. A linked track *beamed* to another device travels as an ordinary stored
+  track: its audio is read out of the folder on the way past.
+- A beam code lives only as long as the tab that made it, and one session talks to one
+  device. Sync is add-only, so it is not a two-way mirror of deletions — a track removed on
+  one device comes back the next time the other one beams.
