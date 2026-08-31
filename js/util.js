@@ -3,7 +3,7 @@
 /** The one place the app's version is written down. `sw.js` carries its own copy
  *  of the same string (a service worker cannot import from here), and Settings →
  *  Version shows both so a stale cache is visible rather than mysterious. */
-export const APP_VERSION = '2.9.0';
+export const APP_VERSION = '2.9.1';
 
 export const $ = (sel, root = document) => root.querySelector(sel);
 export const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];

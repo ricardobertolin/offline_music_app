@@ -2525,6 +2525,7 @@ function sendTracks(ids, label) {
     if (act === 'beam') { dlg.close(); openBeam({ host: true, only: ids, label }); return; }
     if (act === 'zip') { dlg.close(); packBundle(ids, label); }
   };
+  if (dlg.open) dlg.close();
   dlg.showModal();
 }
 
@@ -2587,7 +2588,15 @@ function openSendDialog(file, label, count) {
         await navigator.share({ files: [file], title: label });
         dlg.close();
       } catch (err) {
-        if (err?.name !== 'AbortError') toast(`Share failed: ${err.message}`, 'err');
+        if (err?.name === 'AbortError') return;
+        console.warn('[share]', err);
+        // "Permission denied" here is almost always the phone refusing the file
+        // rather than the app doing something wrong: Android and iOS both cap
+        // what the share sheet will carry, and a record is a big attachment.
+        // The dialog stays open, because the button next to it still works.
+        toast(err?.name === 'NotAllowedError'
+          ? `The system share sheet refused it (${fmtBytes(file.size)}) — save it as a file instead.`
+          : `Share failed: ${err.name || 'error'} — ${err.message}`, 'err');
       }
       return;
     }
@@ -2599,10 +2608,13 @@ function openSendDialog(file, label, count) {
         });
         toast(via === 'file' ? 'Bundle written' : `Bundle downloaded as ${file.name}`);
       } catch (err) {
-        if (err?.name !== 'AbortError') toast(`Could not save it: ${err.message}`, 'err');
+        if (err?.name === 'AbortError') return;
+        console.warn('[save]', err);
+        toast(`Could not save it: ${err.name || 'error'} — ${err.message}`, 'err');
       }
     }
   };
+  if (dlg.open) dlg.close();
   dlg.showModal();
 }
 
@@ -2652,23 +2664,39 @@ function bindBeam() {
   $('#btn-beam-net-test').addEventListener('click', testBeamNetwork);
 }
 
-/** Gather ICE candidates and say plainly what this network can do. Worth
- *  running before blaming the app: a beam that cannot get through symmetric NAT
- *  fails at the connection, not at the music. */
+/**
+ * Say plainly what this network can do, in the order the two things fail.
+ *
+ * First the broker, because without it no beam ever starts and the symptom is a
+ * dialog that just sits there. Then ICE, which is about what lies between the
+ * two devices rather than between this one and a server.
+ */
 async function testBeamNetwork() {
   const el = $('#beam-net-status');
-  el.textContent = 'Testing…';
   const cfg = beam.loadRtcConfig();
-  const res = await beam.probeIce(cfg.iceServers);
   const hasTurn = /turns?:/.test(JSON.stringify(cfg.iceServers || []));
-  if (res.error) { el.textContent = `Could not test: ${res.error}`; return; }
-  el.textContent = res.relay
-    ? 'A TURN relay answered — beams should connect on any network.'
-    : res.srflx
-      ? `STUN answered, so this device knows its public address. ${hasTurn
-        ? 'The configured relay did not answer, so a strict network will still fail.'
-        : 'That is enough on most home networks, but not on mobile carriers or strict firewalls — those need a TURN relay.'}`
-      : 'Neither STUN nor TURN answered. Beaming will only work between devices on the same network, if at all.';
+
+  el.textContent = 'Testing the broker…';
+  const broker = await beam.probeBroker();
+  const brokerLine = broker.ok
+    ? 'Broker: reachable.'
+    : `Broker: no (${broker.detail}). Nothing can pair until this works — a firewall, a VPN, a `
+      + 'privacy extension or the public broker being down are the usual reasons. Your own '
+      + 'peerjs-server in the `server` field below is the durable fix.';
+
+  el.textContent = `${brokerLine} Testing STUN and TURN…`;
+  const res = await beam.probeIce(cfg.iceServers);
+  const iceLine = res.error
+    ? `Could not test ICE: ${res.error}`
+    : res.relay
+      ? 'A TURN relay answered — beams should connect on any network.'
+      : res.srflx
+        ? `STUN answered, so this device knows its public address. ${hasTurn
+          ? 'The configured relay did not answer, so a strict network will still fail.'
+          : 'That is enough on most home networks, but not on mobile carriers or strict firewalls — those need a TURN relay.'}`
+        : 'Neither STUN nor TURN answered. Beaming will only work between devices on the same network, if at all.';
+
+  el.textContent = `${brokerLine} ${iceLine}`;
 }
 
 /**
@@ -2681,11 +2709,17 @@ async function testBeamNetwork() {
  */
 async function openBeam({ host = true, only = null, label = '', code = '' } = {}) {
   if (!beam.available()) { toast('This browser has no WebRTC, so it cannot beam', 'err'); return; }
-  if (session) { toast('A beam is already open'); return; }
+  // A session that has already finished or failed is not "in the way" — only a
+  // live one is. Anything else would leave the button dead until a reload.
+  if (session && session.state !== 'closed' && session.state !== 'done') {
+    toast('A beam is already open');
+    return;
+  }
+  session = null;
 
   const dlg = $('#dlg');
   beamUi = {
-    view: host ? 'starting' : (code ? 'starting' : 'code'),
+    view: host || code ? 'starting' : 'code',
     host,
     only,
     label,
@@ -2699,21 +2733,37 @@ async function openBeam({ host = true, only = null, label = '', code = '' } = {}
     summary: null,
     path: '',
     result: null,
+    // Cancel has to reach a handshake that has not produced a session yet, so
+    // the two share one signal from the moment the dialog opens.
+    abort: new AbortController(),
   };
-  dlg.onkeydown = null;
-  renderBeam();
-  dlg.showModal();
-  // Escape closes a <dialog> on its own; a session left running behind it would
-  // keep sending into a dialog nobody can see.
-  dlg.addEventListener('close', () => { if (beamUi) endBeam(); }, { once: true });
+
+  try {
+    dlg.onkeydown = null;
+    // Another dialog may still be up — the one this was opened from, or one
+    // left behind by a failure. showModal() on an open dialog throws, and the
+    // whole button then looks like it does nothing at all.
+    if (dlg.open) dlg.close();
+    renderBeam();
+    dlg.showModal();
+    // Escape closes a <dialog> on its own; a session left running behind it
+    // would keep sending into a dialog nobody can see.
+    dlg.addEventListener('close', () => { if (beamUi) endBeam(); }, { once: true });
+  } catch (err) {
+    beamUi = null;
+    console.error('[beam] could not open the dialog', err);
+    toast(`Could not open the beam: ${err.message}`, 'err');
+    return;
+  }
 
   if (host) await startHosting();
   else if (code) await startJoining(code);
 }
 
 async function startHosting() {
+  const signal = beamUi?.abort.signal;
   try {
-    const s = await beam.host();
+    const s = await beam.host({ signal });
     if (!beamUi) { s.close(); return; }         // dialog closed while we waited
     wireSession(s);
     beamUi.view = 'waiting';
@@ -2728,8 +2778,9 @@ async function startJoining(code) {
   beamUi.view = 'starting';
   beamUi.status = 'Reaching the broker…';
   renderBeam();
+  const signal = beamUi.abort.signal;
   try {
-    const s = await beam.join(code);
+    const s = await beam.join(code, { signal });
     if (!beamUi) { s.close(); return; }
     wireSession(s);
     beamUi.view = 'waiting';
@@ -2789,6 +2840,10 @@ async function finishBeam(result) {
   if (!beamUi) return;
   beamUi.view = 'done';
   beamUi.result = result;
+  // The tracks are already in, but the records they belong to are rebuilt from
+  // them afterwards, and on a big sync that takes a moment. Say so rather than
+  // claiming to be finished while the library is still being put in order.
+  beamUi.filing = !!(result.added || result.filled);
   renderBeam();
 
   if (result.added || result.filled) {
@@ -2798,6 +2853,7 @@ async function finishBeam(result) {
     }
     await reload();
   }
+  if (beamUi) beamUi.filing = false;
   if (result.settings) {
     state.settings = await db.settings();
     applyTheme();
@@ -2815,6 +2871,9 @@ async function finishBeam(result) {
 function showBeamError(err) {
   session?.close();
   session = null;
+  // Cancelling is not a failure, and the dialog it would report into is gone.
+  if (err?.name === 'AbortError') return;
+  console.warn('[beam]', err);
   if (!beamUi) { toast(err.message, 'err'); return; }
   beamUi.view = 'error';
   beamUi.error = err.message || String(err);
@@ -2824,6 +2883,9 @@ function showBeamError(err) {
 /** Tear the session down, whichever way the dialog was left. */
 function endBeam() {
   const running = beamUi && (beamUi.view === 'running');
+  // Cancelling during the handshake has no session to close yet — the signal is
+  // the only thing that can reach a broker still being waited on.
+  beamUi?.abort.abort();
   beamUi = null;
   if (session) {
     if (running) session.abort('the other device closed the beam');
@@ -2985,6 +3047,7 @@ function beamDone(u) {
   if (r.skipped) bits.push(`${r.skipped} already here`);
   return `<h3>Beam finished</h3>
     <p class="muted small">${bits.length ? escapeHtml(bits.join(' · ')) : 'Both devices already agreed — nothing had to move.'}</p>
+    ${u.filing ? '<p class="hint">Filing what arrived into its records…</p>' : ''}
     ${r.failed?.length ? `<p class="hint">${r.failed.length} did not make it:<br>${escapeHtml(r.failed.slice(0, 5).join('; '))}</p>` : ''}
     <div class="actions"><div class="grow"></div>
       <button class="btn primary" data-act="close">Close</button></div>`;

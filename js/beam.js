@@ -40,6 +40,7 @@ const FOLD_BYTES = 8 * 1024 * 1024;    // fold received chunks into a Blob this 
 const INVENTORY_PAGE = 400;            // fingerprints per message
 const IDLE_TIMEOUT = 90_000;           // silence during a transfer means it died
 const CONNECT_TIMEOUT = 30_000;        // how long a typed code waits for an answer
+const BROKER_TIMEOUT = 20_000;         // ...and how long the broker gets to answer at all
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';  // no I, O, 0 or 1
 const ID_PREFIX = 'offpress-';
 
@@ -162,6 +163,40 @@ export async function probeIce(iceServers = loadRtcConfig().iceServers, timeoutM
     if (pc) { try { pc.close(); } catch { /* already gone */ } }
   }
   return found;
+}
+
+/**
+ * Can this device reach the broker at all?
+ *
+ * The two failures look identical from the outside — a beam that never gets
+ * going — but they are fixed in opposite ways: a broker that cannot be reached
+ * is a blocked or missing network path to *one* host, while ICE trouble is
+ * about what sits between the two devices. Ask them separately.
+ *
+ * @returns {Promise<{ok:boolean, detail:string}>}
+ */
+export async function probeBroker(timeoutMs = 12_000) {
+  let Peer;
+  try { Peer = await loadPeerJs(); } catch (err) { return { ok: false, detail: err.message }; }
+  return new Promise((resolve) => {
+    let peer = null;
+    let done = false;
+    const finish = (ok, detail) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try { peer?.destroy(); } catch { /* already gone */ }
+      resolve({ ok, detail });
+    };
+    const timer = setTimeout(() => finish(false, `no answer within ${Math.round(timeoutMs / 1000)} s`), timeoutMs);
+    try {
+      peer = new Peer(peerOptions());
+      peer.on('open', () => finish(true, 'answered'));
+      peer.on('error', (err) => finish(false, err?.type || err?.message || 'refused'));
+    } catch (err) {
+      finish(false, err.message);
+    }
+  });
 }
 
 /** Which path did a live connection actually settle on? Worth showing: "direct,
@@ -743,9 +778,35 @@ class BeamSession {
 
 /* ------------------------------- entry points ----------------------------- */
 
+/**
+ * A broker that never answers is the one failure with no natural end: the
+ * WebSocket to it can hang for as long as the tab is open, and a page that says
+ * "reaching the broker" forever tells the user nothing. So every handshake with
+ * it runs against a clock, and against whatever the user pressed Cancel with.
+ *
+ * @returns {() => void} call once the broker has answered
+ */
+function brokerWatch(peer, reject, signal) {
+  const give = (err) => {
+    try { peer.destroy(); } catch { /* already gone */ }
+    reject(err);
+  };
+  const timer = setTimeout(() => give(new Error(
+    'The signalling broker did not answer. A beam needs it to introduce the two devices, '
+    + 'even on the same Wi-Fi — check the connection, or point Network at your own peerjs-server.',
+  )), BROKER_TIMEOUT);
+  const abort = () => give(new DOMException('Beam cancelled', 'AbortError'));
+  signal?.addEventListener('abort', abort, { once: true });
+  return () => {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', abort);
+  };
+}
+
 /** Open a session and wait for the other device. Resolves as soon as the broker
- *  has given us the code — the peer arrives later, as a `peer` event. */
-export async function host() {
+ *  has given us the code — the peer arrives later, as a `peer` event.
+ *  @param {AbortSignal} [o.signal] cancels while the broker is still thinking */
+export async function host({ signal } = {}) {
   const Peer = await loadPeerJs();
   const session = new BeamSession({ isHost: true, code: null });
 
@@ -755,7 +816,9 @@ export async function host() {
       const code = makeCode();
       const peer = new Peer(`${ID_PREFIX}${code}`, peerOptions());
       session.peer = peer;
+      const answered = brokerWatch(peer, reject, signal);
       peer.on('open', () => {
+        answered();
         session.code = code;
         session.state = 'waiting';
         resolve();
@@ -768,10 +831,12 @@ export async function host() {
       });
       peer.on('error', (err) => {
         if (err?.type === 'unavailable-id' && attempts++ < 3) {
+          answered();
           try { peer.destroy(); } catch { /* fine */ }
           tryOnce();
           return;
         }
+        answered();
         if (session.state === 'starting') reject(brokerError(err));
         else session._fail(brokerError(err));
       });
@@ -782,8 +847,9 @@ export async function host() {
   return session;
 }
 
-/** Join the session behind a code. */
-export async function join(code) {
+/** Join the session behind a code.
+ *  @param {AbortSignal} [o.signal] cancels while the broker is still thinking */
+export async function join(code, { signal } = {}) {
   const clean = normalizeCode(code);
   if (!isCode(clean)) throw new Error('A beam code is six letters and digits');
   const Peer = await loadPeerJs();
@@ -792,12 +858,15 @@ export async function join(code) {
   await new Promise((resolve, reject) => {
     const peer = new Peer(peerOptions());
     session.peer = peer;
+    const answered = brokerWatch(peer, reject, signal);
     peer.on('open', () => {
+      answered();
       session.state = 'waiting';
       session._attach(peer.connect(`${ID_PREFIX}${clean}`, { reliable: true }));
       resolve();
     });
     peer.on('error', (err) => {
+      answered();
       const wrapped = err?.type === 'peer-unavailable'
         ? new Error('No device is waiting behind that code. Codes die when the other tab closes.')
         : brokerError(err);
