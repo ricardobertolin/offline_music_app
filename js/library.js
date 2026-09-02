@@ -244,6 +244,10 @@ function newTrack(file, meta, hash, pos) {
     declaredKbps: meta.declaredKbps || 0,
     duration: 0,
     artId: null,
+    // When a person last changed something about this row by hand. Untouched
+    // tags are 0, which is what lets a beam tell "I fixed this" apart from "I
+    // have never looked at it" and carry only the first across. See sync.js.
+    editedAt: 0,
     analyzed: false,
     loudness: null,
     quality: null,
@@ -319,6 +323,11 @@ export async function refreshAlbum(key) {
     // Custom ordering survives re-analysis, renames and new imports.
     sortMode: previous?.sortMode || 'folder',
     order: (previous?.order || []).filter((id) => ids.has(id)),
+    // Everything below the line is the record's own, not something measured off
+    // its tracks, so a rebuild must hand it back rather than compute it. See
+    // ALBUM_CHOICES in sync.js — this is the same list, from the other side.
+    coverFilter: previous?.coverFilter || '',
+    editedAt: previous?.editedAt || 0,
     year: tracks.map((t) => t.year).find(Boolean) || '',
     trackCount: tracks.length,
     duration: tracks.reduce((a, t) => a + (t.duration || 0), 0),
@@ -378,7 +387,7 @@ export async function setAlbumSort(key, mode) {
     // Materialize whatever is on screen now, so dragging starts from that order.
     album.order = sortAlbumTracks(await db.byIndex('tracks', 'albumKey', key), { ...album, sortMode: 'folder' }).map((t) => t.id);
   }
-  await db.put('albums', album);
+  await db.put('albums', stamp(album));
   return album;
 }
 
@@ -388,7 +397,24 @@ export async function setAlbumOrder(key, ids) {
   if (!album) return null;
   album.sortMode = 'custom';
   album.order = ids;
-  await db.put('albums', album);
+  await db.put('albums', stamp(album));
+  return album;
+}
+
+/**
+ * How this one record's cover is printed, overriding Settings → Appearance.
+ *
+ * Display only, like the app-wide setting it overrides: the stored picture is
+ * never touched, so this costs nothing to change and nothing to change back. An
+ * empty string means the record has no opinion and follows Settings.
+ *
+ * @param {string} filter one of db.COVER_FILTERS' keys, or '' to follow Settings
+ */
+export async function setAlbumCoverFilter(key, filter) {
+  const album = await db.get('albums', key);
+  if (!album) return null;
+  album.coverFilter = String(filter || '');
+  await db.put('albums', stamp(album));
   return album;
 }
 
@@ -433,7 +459,15 @@ function applyFields(track, fields) {
   if (!track.title) track.title = (track.fileName || 'Unknown').replace(/\.[^.]+$/, '');
   if (!track.artist) setArtists(track, ['Unknown Artist']);
   if (!track.album) track.album = 'Unknown Album';
-  return track;
+  return stamp(track);
+}
+
+/** Mark a row as hand-edited, now. Everything that a person changed — and only
+ *  that — carries this, so a beam can hand the fix to the other device instead
+ *  of making you type it twice. */
+export function stamp(row) {
+  row.editedAt = Date.now();
+  return row;
 }
 
 /**
@@ -496,7 +530,7 @@ export async function renameAlbum(key, { name, artist, applyToTrackArtists = fal
       if (applyToTrackArtists && t.albumArtist) setArtists(t, [t.albumArtist]);
     }
     t.albumKey = albumKeyOf(t);
-    await db.put('tracks', t);
+    await db.put('tracks', stamp(t));
   }
   const newKey = tracks[0].albumKey;
 
@@ -516,7 +550,10 @@ export async function renameAlbum(key, { name, artist, applyToTrackArtists = fal
     await db.del('albums', key);
     await refreshAlbum(key); // drops the old record if it is now empty
   }
-  await refreshAlbum(newKey);
+  const renamed = await refreshAlbum(newKey);
+  // The rebuild carries the old record's timestamp forward; the rename is newer
+  // than that, and a beam decides what to hand over by exactly this number.
+  if (renamed) await db.put('albums', stamp(renamed));
   return newKey;
 }
 
@@ -579,9 +616,8 @@ export async function setTrackArt(trackId, source, settings) {
   const track = await db.get('tracks', trackId);
   if (!track) return null;
   const art = await saveArtwork(source, settings);
-  const old = track.artId;
   track.artId = art.id;
-  await db.put('tracks', track);
+  await db.put('tracks', stamp(track));
   await refreshAlbum(track.albumKey);
   await sweepArtwork();
   return art;
@@ -594,7 +630,7 @@ export async function setAlbumArt(albumKey, source, settings, { onlyMissing = fa
   for (const t of tracks) {
     if (onlyMissing && t.artId) continue;
     t.artId = art.id;
-    await db.put('tracks', t);
+    await db.put('tracks', stamp(t));
   }
   await refreshAlbum(albumKey);
   await sweepArtwork();
@@ -636,12 +672,12 @@ export async function repairArtwork(settings, onProgress, signal) {
       const meta = await readMetadata(blob);
       if (meta.picture?.bytes?.length) {
         const art = await saveArtwork(meta.picture, settings);
-        if (t.artId !== art.id) { t.artId = art.id; await db.put('tracks', t); fixed++; }
+        if (t.artId !== art.id) { t.artId = art.id; await db.put('tracks', stamp(t)); fixed++; }
         albumArt.set(t.albumKey, art.id);
       } else if (t.artId) {
         // Art it never had embedded: keep it only if the album really uses it.
         const owner = albumArt.get(t.albumKey);
-        if (owner && owner !== t.artId) { t.artId = owner; await db.put('tracks', t); fixed++; }
+        if (owner && owner !== t.artId) { t.artId = owner; await db.put('tracks', stamp(t)); fixed++; }
       }
     } catch { /* leave this track as it is */ }
   }

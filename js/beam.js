@@ -307,7 +307,7 @@ class BeamSession {
     this.theirs = null;        // theirs
     this.pathKind = null;
     this.plan = null;          // the agreed plan, once started
-    this.result = { added: 0, filled: 0, skipped: 0, sent: 0, settings: 0, failed: [] };
+    this.result = { added: 0, filled: 0, updated: 0, skipped: 0, sent: 0, settings: 0, failed: [] };
 
     this._handlers = new Map();
     this._invIn = null;        // inventory being assembled
@@ -323,6 +323,8 @@ class BeamSession {
     this._sentBytes = 0;
     this._recvBytes = 0;
     this._phaseBytes = 0;
+    this._phaseTracks = 0;
+    this._recvTracks = 0;
   }
 
   /* ------------------------------- events -------------------------------- */
@@ -482,20 +484,29 @@ class BeamSession {
     this._emit('phase', 'sending');
     this._send({ t: 'phase', tracks: plan.items.length, bytes: plan.bytes });
     this._sentBytes = 0;
-    const total = plan.bytes || 1;
+    // A run that is nothing but corrections moves no audio at all, and a bar
+    // measured in bytes would sit at zero through the whole of it. Count rows
+    // instead when there are no bytes to count.
+    const total = plan.bytes || 0;
+    const at = (bytes, done) => (total ? bytes / total : done / (plan.items.length || 1));
     const touched = new Set();
 
+    let done = 0;
     for (const item of plan.items) {
       if (this._aborted) throw new Error(this._aborted);
       const track = await db.get('tracks', item.id);
       if (!track) continue;
-      const { audio, original, art } = await sync.readTrackPayload(track);
+      // An edit to a track they already hold whole is tags and a cover, nothing
+      // more: they have the file, and it is the same file — the hash said so.
+      const metaOnly = item.reason === 'meta';
+      const { audio, original, art } = await sync.readTrackPayload(track, { withAudio: !metaOnly });
       const artMeta = art ? (({ full, thumb, ...rest }) => rest)(art) : null;
       const sendArt = !!art && !sync.hasArt(this.theirs, art);
 
       this._send({
         t: 'track',
         record: sync.packTrack(track),
+        reason: item.reason,
         art: artMeta,
         artBytes: sendArt,
         audio: !!audio,
@@ -506,20 +517,28 @@ class BeamSession {
         if (art.thumb) await this._sendFile('art-thumb', art.thumb);
       }
       if (audio) await this._sendFile('audio', audio, (sent) => {
-        this._emit('progress', (this._sentBytes + sent) / total, `${track.title || track.fileName}`);
+        this._emit('progress', at(this._sentBytes + sent, done), `${track.title || track.fileName}`);
       });
       if (original) await this._sendFile('original', original);
       this._send({ t: 'track-end', hash: track.hash });
 
       this._sentBytes += audio ? audio.size : 0;
       this.result.sent++;
+      done++;
       touched.add(track.albumKey);
-      this._emit('progress', this._sentBytes / total, track.title || track.fileName || '');
+      this._emit('progress', at(this._sentBytes, done), track.title || track.fileName || '');
     }
 
     // Records last: by now the other side has the tracks their order refers to.
+    // A record goes if any of its tracks moved, or if it was configured here
+    // more recently than there — renaming a record or changing how its cover is
+    // printed moves no audio at all, and would otherwise never reach them.
+    const theirAlbums = new Map((this.theirs?.albums || []).map((a) => [a.key, a]));
     for (const album of await db.getAll('albums')) {
-      if (!touched.has(album.key)) continue;
+      const mine = touched.has(album.key);
+      // A beam of one record stays a beam of one record: nothing else travels
+      // just because it happens to have been renamed at some point.
+      if (!mine && (only || (album.editedAt || 0) <= (theirAlbums.get(album.key)?.editedAt || 0))) continue;
       this._send({
         t: 'album',
         record: sync.albumFingerprint(album),
@@ -647,7 +666,9 @@ class BeamSession {
       }
       case 'phase': {
         this._phaseBytes = msg.bytes || 0;
+        this._phaseTracks = msg.tracks || 0;
         this._recvBytes = 0;
+        this._recvTracks = 0;
         this._emit('phase', 'receiving');
         this._emit('progress', 0, `${msg.tracks} track${msg.tracks === 1 ? '' : 's'} incoming`);
         return;
@@ -689,10 +710,16 @@ class BeamSession {
             original: p.files.original || null,
             artId,
           });
-          this.result[what === 'added' ? 'added' : what === 'filled' ? 'filled' : 'skipped']++;
+          this.result[what]++;
           this._emit('track', what, p.record);
         } catch (err) {
           this.result.failed.push(`${p.record?.title || p.record?.id}: ${err.message}`);
+        }
+        // Corrections carry no audio, so a run of them never moves the byte
+        // counter the bar is normally drawn from — count the rows instead.
+        this._recvTracks++;
+        if (!this._phaseBytes && this._phaseTracks) {
+          this._emit('progress', this._recvTracks / this._phaseTracks, p.record?.title || '');
         }
         return;
       }

@@ -30,6 +30,7 @@ const track = (o = {}) => ({
   needsRelink: !!o.needsRelink,
   analyzed: o.analyzed !== false,
   source: o.source || 'blob',
+  editedAt: o.editedAt || 0,
 });
 
 const inv = (tracks, art = [], albums = []) => ({
@@ -124,6 +125,57 @@ const inv = (tracks, art = [], albums = []) => ({
   const backward = planPush(inv([t3, t2, t1]), inv([t2]));
   eq('order does not change the plan',
     forward.items.map((t) => t.hash).sort(), backward.items.map((t) => t.hash).sort());
+}
+
+/* --------------------------------- edits ---------------------------------- */
+
+{
+  // The point of the whole thing: a name fixed here reaches a device that has
+  // the file already, and takes no audio with it.
+  const mine = inv([track({ hash: 'a', editedAt: 2000 })]);
+  const theirs = inv([track({ hash: 'a', editedAt: 1000 })]);
+  const plan = planPush(mine, theirs);
+  eq('a correction reaches a track they already hold', plan.items.map((t) => t.reason), ['meta']);
+  eq('...counted apart from added tracks', [plan.metas, plan.added, plan.fills], [1, 0, 0]);
+  eq('...and weighs nothing on the wire', plan.bytes, 0);
+  eq('...and is not counted as skipped', plan.skipped, 0);
+}
+
+{
+  // The stale side must not be able to argue: an older edit stays home, and a
+  // library that has never been touched cannot undo one that has.
+  const stale = inv([track({ hash: 'a', editedAt: 1000 })]);
+  const fresh = inv([track({ hash: 'a', editedAt: 2000 })]);
+  eq('an older edit is not offered', planPush(stale, fresh).items.length, 0);
+  eq('...and counted as nothing to do', planPush(stale, fresh).skipped, 1);
+  eq('an untouched row never overwrites an edited one',
+    planPush(inv([track({ hash: 'a' })]), fresh).items.length, 0);
+  eq('the same edit, both sides, moves nothing',
+    planPush(fresh, fresh).items.length, 0);
+}
+
+{
+  const mine = inv([track({ hash: 'a', editedAt: 5 })]);
+  const theirs = inv([track({ hash: 'a' })]);
+  eq('edits can be left out of a run', planPush(mine, theirs, { syncEdits: false }).items.length, 0);
+}
+
+{
+  // A row they hold empty *and* have an older edit for: the audio is the bigger
+  // job, so it leads — the edit rides along in the same record either way.
+  const mine = inv([track({ hash: 'a', editedAt: 9 })]);
+  const theirs = inv([track({ hash: 'a', needsAudio: true })]);
+  const plan = planPush(mine, theirs);
+  eq('filling a hollow row wins over calling it an edit', plan.items.map((t) => t.reason), ['fill']);
+  eq('...and its bytes are still counted', plan.bytes, 5_000_000);
+}
+
+{
+  const mine = inv([track({ hash: 'a', editedAt: 3 }), track({ hash: 'b' })]);
+  const theirs = inv([track({ hash: 'a' })]);
+  const s = summarize(mine, theirs);
+  eq('the summary separates edits from tracks',
+    [s.send.items.length, s.send.metas, s.send.added], [2, 1, 1]);
 }
 
 /* -------------------------------- covers ---------------------------------- */

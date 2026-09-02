@@ -23,7 +23,9 @@ const state = {
   albums: [],
   folders: [],          // linked folders — empty everywhere but desktop Chromium
   backupScope: 'full',  // full | meta
-  view: 'tracks',
+  // Records, not Tracks: a library is a shelf before it is a file list, and the
+  // grid is the only view that says what is in it without being read.
+  view: 'albums',
   filter: 'all',
   sort: 'addedAt',
   q: '',
@@ -300,9 +302,11 @@ function bindUI() {
   bindAddMenu();
   $('#btn-add-track').addEventListener('click', () => $('#file-input').click());
   // "Add album" here has its own menu, wired in bindAddMenu.
-  $('#tracks-empty').addEventListener('click', (e) => {
-    if (e.target.dataset.act === 'track') $('#file-input').click();
-  });
+  for (const id of ['#tracks-empty', '#albums-empty']) {
+    $(id).addEventListener('click', (e) => {
+      if (e.target.dataset.act === 'track') $('#file-input').click();
+    });
+  }
   for (const id of ['#file-input', '#dir-input', '#zip-input']) {
     $(id).addEventListener('change', (e) => importPicked(e.target));
   }
@@ -344,6 +348,14 @@ function bindUI() {
 
   bindSettings();
   bindDropZone();
+
+  // One <dialog> serves every modal, so one listener keeps the Back button
+  // pointed at it. A frame late on purpose: a dialog that hands over to another
+  // (Send… → Beam…) closes and reopens in the same turn, and the screen the user
+  // sees never actually went away.
+  $('#dlg').addEventListener('close', () => {
+    requestAnimationFrame(() => { if (!$('#dlg').open) navDrop('dialog'); });
+  });
 
   document.addEventListener('contextmenu', onContextMenu);
   // A menu pinned to viewport coordinates has to go when what is under it moves.
@@ -387,7 +399,11 @@ function bindAddMenu() {
   // Linking needs the File System Access API, so the option only exists where it does.
   if (source.canLink()) $$('.needs-link').forEach((el) => el.classList.remove('hidden'));
 
-  for (const [btn, menu] of [['#btn-add-album', '#add-album-menu'], ['#btn-empty-album', '#empty-album-menu']]) {
+  for (const [btn, menu] of [
+    ['#btn-add-album', '#add-album-menu'],
+    ['#btn-empty-album', '#empty-album-menu'],
+    ['#btn-empty-record', '#empty-record-menu'],
+  ]) {
     const m = $(menu);
     bindPopover($(btn), m);
     m.addEventListener('click', (e) => {
@@ -536,6 +552,13 @@ function albumMenuItems(key) {
     '-',
     { label: 'Edit name & artist…', sub: `Applies to all ${album.trackCount} track${album.trackCount === 1 ? '' : 's'}`, run: () => openAlbumEditDialog(album) },
     { label: 'Set cover…', sub: 'Center-cropped and normalized', run: () => pickArtFor({ albumKey: key }) },
+    {
+      label: 'Cover print…',
+      sub: album.coverFilter
+        ? `Printed ${(db.COVER_FILTERS.find((f) => f.key === album.coverFilter)?.label || album.coverFilter).toLowerCase()}`
+        : 'This record only — Settings decides the rest',
+      run: () => openAlbumFilterDialog(album),
+    },
     { label: 'Send this record…', sub: 'A .zip carrying the audio and every measurement', run: () => sendTracks(ids(), album.name) },
     '-',
     { label: 'Delete record', danger: true, sub: 'Its tracks, audio and orphaned covers', run: () => deleteAlbumByKey(key) },
@@ -589,9 +612,83 @@ function onContextMenu(e) {
   openContextMenu(e.clientX, e.clientY, appMenuItems());
 }
 
+/* ============================== the back button =============================
+
+   On a phone this app is a stack of screens, not a page: the record you opened
+   sits on top of the grid, and the Now-playing screen sits on top of that. The
+   system Back button — the one under the screen on Android, and the browser's
+   arrow everywhere else — should take the top screen off. Before this it left
+   the app outright from wherever you happened to be, which on a phone is the
+   single most-pressed control there is.
+
+   So every screen that opens on top of another pushes one history entry, and
+   popstate takes it back off. A screen closed by its own button walks history
+   back by hand instead, so the two stacks can never drift apart. Nothing is put
+   in the URL: these are screens within one page, not addresses, and a phone that
+   restores a tab should come back to the library rather than to whatever dialog
+   was open three days ago. */
+
+/** [{kind, close}] — one entry per pushed history entry, the top screen last. */
+const navStack = [];
+/** Set while popstate unwinds, so a close handler cannot push or pop in turn. */
+let navPopping = false;
+
+/**
+ * @param {string} kind what sort of screen this is
+ * @param {Function} close put the UI back the way it was; must be safe to call
+ *        when the screen is already shut, because both routes end up here
+ */
+function navPush(kind, close) {
+  if (navPopping) return;
+  // Every modal in the app is the same <dialog> element, and one handing over to
+  // the next (Send… → Beam…) is still one screen as far as Back is concerned.
+  if (kind === 'dialog' && navStack.some((e) => e.kind === kind)) return;
+  navStack.push({ kind, close });
+  try { history.pushState({ offpress: navStack.length }, ''); } catch { navStack.pop(); }
+}
+
+/** A screen closed itself. Walk history back so its entry goes with it, rather
+ *  than leaving a Back press that appears to do nothing. */
+function navDrop(kind) {
+  if (navPopping) return;
+  const i = navStack.findIndex((e) => e.kind === kind);
+  if (i < 0) return;
+  const steps = navStack.length - i;
+  navStack.length = i;
+  // The popstate this causes finds nothing left to close, and resets the flag.
+  navPopping = true;
+  // Unless it never comes — an entry the browser has since dropped would leave
+  // the whole stack wedged shut, which is worse than one Back press going wide.
+  setTimeout(() => { navPopping = false; }, 500);
+  history.go(-steps);
+}
+
+window.addEventListener('popstate', (e) => {
+  const depth = e.state?.offpress || 0;
+  navPopping = true;
+  try {
+    while (navStack.length > depth) {
+      const entry = navStack.pop();
+      try { entry.close(); } catch (err) { console.warn('[nav] could not close a screen', err); }
+    }
+  } finally { navPopping = false; }
+});
+
+/** Every modal goes through here, so Back closes it like any other screen. */
+function openModal() {
+  const dlg = $('#dlg');
+  if (!dlg.open) dlg.showModal();
+  navPush('dialog', () => { if (dlg.open) dlg.close(); });
+}
+
 const VIEW_CTX = { tracks: 'Tracks', albums: 'Records', quality: 'Quality', report: 'Report', settings: 'Settings' };
 
 function showView(view) {
+  // Going somewhere else is a step forward, so Back is a step back to here.
+  if (view !== state.view) {
+    const from = state.view;
+    navPush('view', () => showView(from));
+  }
   state.view = view;
   $$('.tab').forEach((t) => t.classList.toggle('is-active', t.dataset.view === view));
   $$('.view').forEach((v) => v.classList.toggle('is-active', v.dataset.view === view));
@@ -946,7 +1043,7 @@ function trackRow(t, { compact = false, checkbox = false, draggable = false, pic
     : `<div class="tile" style="--cover:${tintOf(t.albumKey).cover}">
          <img data-art="${t.artId || ''}" class="is-empty" alt=""></div>`;
 
-  return `<div class="${cls}" data-id="${t.id}"${draggable ? ' draggable="true"' : ''}>
+  return `<div class="${cls}" data-id="${t.id}"${coverFx(t.albumKey)}${draggable ? ' draggable="true"' : ''}>
     ${face}
     <div class="col">
       <div class="t1">${escapeHtml(t.title)}</div>
@@ -1085,14 +1182,39 @@ function albumOf(t) {
   return state.albums.find((a) => a.key === t.albumKey) || null;
 }
 
+/**
+ * The print treatment a record asks for, as an attribute to drop on whatever
+ * wraps its cover.
+ *
+ * Nothing at all when the record has no opinion: the value behind the attribute
+ * is an inherited custom property (see the cover-filter block in app.css), so an
+ * absent attribute simply keeps whatever <html> is carrying from Settings. That
+ * is the whole mechanism — a record overrides the app by being nearer the cover
+ * in the tree, and no specificity fight is involved.
+ */
+function coverFx(albumKey) {
+  const f = state.albums.find((a) => a.key === albumKey)?.coverFilter;
+  return f ? ` data-cover-filter="${escapeHtml(f)}"` : '';
+}
+
+/** The same, for the two covers that are updated in place rather than redrawn. */
+function setCoverFx(el, albumKey) {
+  if (!el) return;
+  const f = state.albums.find((a) => a.key === albumKey)?.coverFilter;
+  if (f) el.dataset.coverFilter = f;
+  else delete el.dataset.coverFilter;
+}
+
 function renderAlbums() {
   const grid = $('#album-grid');
   const detail = $('#album-detail');
   const back = $('#btn-album-back');
   const head = $('#albums-head');
+  const empty = $('#albums-empty');
   if (state.album) {
     grid.classList.add('hidden');
     head.classList.add('hidden');
+    empty.classList.add('hidden');
     detail.classList.remove('hidden');
     back.classList.remove('hidden');
     renderAlbumDetail(state.album);
@@ -1102,10 +1224,12 @@ function renderAlbums() {
   head.classList.remove('hidden');
   detail.classList.add('hidden');
   back.classList.add('hidden');
+  // The landing view, so this is where a first-time library says what to do.
+  empty.classList.toggle('hidden', state.albums.length > 0);
   const albums = sortBy(state.albums, (a) => `${a.artist} ${a.year} ${a.name}`.toLowerCase());
   grid.innerHTML = albums.map((a) => {
     const current = player.track?.albumKey === a.key;
-    return `<div class="album${current ? ' is-current' : ''}" data-key="${escapeHtml(a.key)}">
+    return `<div class="album${current ? ' is-current' : ''}" data-key="${escapeHtml(a.key)}"${coverFx(a.key)}>
       <div class="tile" style="--cover:${tintOf(a.key).cover}">
         <!-- Full size, not the thumb. A grid tile is 120–220 css px, so a phone
              is asking it for 400-plus device pixels and a 128px thumb has to be
@@ -1121,7 +1245,7 @@ function renderAlbums() {
       <div class="a1">${escapeHtml(a.name)}</div>
       <div class="a2">${escapeHtml(a.artist)}${a.integratedLufs != null ? ` · ${a.integratedLufs} LUFS` : ''}</div>
     </div>`;
-  }).join('') || '<p class="hint">No records yet.</p>';
+  }).join('');
   hydrateArt(grid);
 }
 
@@ -1131,9 +1255,15 @@ function onAlbumGridClick(e) {
 }
 
 function openAlbum(key) {
+  const had = state.album;
   state.album = key;
   renderAlbums();
   setContext(key ? state.albums.find((a) => a.key === key)?.name : VIEW_CTX.albums);
+  // A record opens on top of the grid, so Back should put it away rather than
+  // leave the app. Switching straight from one record to another is still one
+  // screen deep — the entry already there closes whichever is open.
+  if (key && !had) navPush('album', () => openAlbum(null));
+  else if (!key) navDrop('album');
 }
 
 function renderAlbumDetail(key) {
@@ -1147,7 +1277,7 @@ function renderAlbumDetail(key) {
   const pending = album.trackCount - album.analyzedTracks;
   const el = $('#album-detail');
   el.innerHTML = `
-    <div class="hero" style="--wash:${tint.wash};--cover:${tint.cover}">
+    <div class="hero" style="--wash:${tint.wash};--cover:${tint.cover}"${coverFx(key)}>
       <div class="hero-wash"></div>
       <div class="hero-grain"></div>
       <div class="hero-fade"></div>
@@ -1193,6 +1323,17 @@ function renderAlbumDetail(key) {
     `<option value="${v}"${album.sortMode === v ? ' selected' : ''}>${escapeHtml(label)}</option>`).join('')}
               </select>
               <p class="menu-hint">Drag a row to place it by hand — that switches the record to a custom order.</p>
+            </div>
+            <div class="menu-sep"></div>
+            <div class="menu-sec">
+              <label class="menu-label" for="album-cover-filter">Cover print</label>
+              <select id="album-cover-filter">
+                <option value=""${album.coverFilter ? '' : ' selected'}>Follow Settings (${escapeHtml(currentFilterLabel())})</option>
+                ${db.COVER_FILTERS.map((f) =>
+    `<option value="${f.key}"${album.coverFilter === f.key ? ' selected' : ''}>${escapeHtml(f.label)}</option>`).join('')}
+              </select>
+              <p class="menu-hint">How this record is printed everywhere it appears. Display only —
+              the stored cover is never changed.</p>
             </div>
             <div class="menu-sep"></div>
             <button class="menu-item" data-album-act="rename" role="menuitem">
@@ -1244,6 +1385,15 @@ function renderAlbumDetail(key) {
   $('#album-sort').addEventListener('change', async (e) => {
     await lib.setAlbumSort(key, e.target.value);
     await reload();
+  });
+
+  $('#album-cover-filter').addEventListener('change', async (e) => {
+    const value = e.target.value;
+    await lib.setAlbumCoverFilter(key, value);
+    await reload();
+    toast(value
+      ? `This record prints ${db.COVER_FILTERS.find((f) => f.key === value)?.label.toLowerCase() || value}`
+      : 'This record follows Settings again');
   });
 
   enableDragOrder($('#album-tracks'), async (ids) => {
@@ -1402,10 +1552,57 @@ function formDialog({ title, hint, fields, saveLabel = 'Save', onSave }) {
     if (box) addArtist(box);
     else save();
   };
-  dlg.showModal();
+  openModal();
   const first = dlg.querySelector('input.text');
   first?.select();
   return { dlg, closed };
+}
+
+/** What Settings → Appearance is currently set to, in words. */
+const currentFilterLabel = () =>
+  db.COVER_FILTERS.find((f) => f.key === (state.settings.coverFilter || 'none'))?.label || 'Off';
+
+/**
+ * Pick a record's own print treatment, from anywhere its cover is — the grid,
+ * a row, the record itself. The same choice lives in the record's Configure
+ * menu; this is the one that does not need the record open first.
+ */
+function openAlbumFilterDialog(album) {
+  const dlg = $('#dlg');
+  const options = [{ key: '', label: `Follow Settings (${currentFilterLabel()})` }, ...db.COVER_FILTERS];
+  let picked = album.coverFilter || '';
+
+  const paint = () => {
+    dlg.innerHTML = `<div class="dlg-body">
+      <h3>Cover print</h3>
+      <p class="hint">How <b>${escapeHtml(album.name)}</b> is printed wherever it is shown — the grid,
+      the record, its rows and the transport. Display only: the stored picture is untouched, so this
+      costs nothing to change and nothing to change back.</p>
+      <div class="field">${segmented('afilter', options, picked)}</div>
+      <div class="actions">
+        <button class="btn primary" data-act="save">Save</button>
+        <div class="grow"></div>
+        <button class="btn" data-act="cancel">Cancel</button>
+      </div>
+    </div>`;
+  };
+
+  paint();
+  dlg.onkeydown = null;
+  dlg.onclick = async (e) => {
+    const btn = e.target.closest('[data-act],[data-afilter]');
+    if (!btn) return;
+    // '' is a real choice here ("follow Settings"), and an empty dataset value
+    // is falsy — ask whether the attribute is there, not what it says.
+    if ('afilter' in btn.dataset) { picked = btn.dataset.afilter; paint(); return; }
+    if (btn.dataset.act === 'cancel') { dlg.close(); return; }
+    if (btn.dataset.act === 'save') {
+      dlg.close();
+      await lib.setAlbumCoverFilter(album.key, picked);
+      await reload();
+    }
+  };
+  openModal();
 }
 
 function openAlbumEditDialog(album) {
@@ -2092,7 +2289,15 @@ function openNow(show) {
   el.hidden = !on;
   // Focus the screen itself, not its close button: a control would take a
   // visible ring the moment it is focused from script.
-  if (on) { el.focus({ preventScroll: true }); measureMarquees(); }
+  if (on) {
+    el.focus({ preventScroll: true });
+    measureMarquees();
+    // The full-screen player is the deepest thing on a phone, and the chevron in
+    // its corner is not where a thumb goes first — Back has to close it too.
+    navPush('now', () => openNow(false));
+  } else {
+    navDrop('now');
+  }
 }
 
 /** Everything on the screen that depends on which track is loaded. */
@@ -2101,6 +2306,7 @@ async function renderNow(track, gain) {
   const tint = tintOf(track.albumKey);
   el.style.setProperty('--wash', tint.wash);
   $('#now-art-box').style.setProperty('--cover', tint.cover);
+  setCoverFx($('#now-art-box'), track.albumKey);
 
   $('#now-record').textContent = track.album;
   setMarquee($('#now-track'), track.title);
@@ -2146,6 +2352,7 @@ async function updatePlayerUI(track, gain) {
 
   const box = $('#p-art-box');
   box.style.setProperty('--cover', tintOf(track.albumKey).cover);
+  setCoverFx(box, track.albumKey);
   const img = $('#p-art');
   const url = await artUrl(track.artId, 'full');
   if (url) { img.src = url; img.classList.remove('is-empty'); }
@@ -2201,7 +2408,7 @@ async function openTrackDialog(id) {
 
   dlg.innerHTML = `<div class="dlg-body">
     <div class="dlg-art">
-      <div class="tile" style="--cover:${tintOf(t.albumKey).cover}">
+      <div class="tile" style="--cover:${tintOf(t.albumKey).cover}"${coverFx(t.albumKey)}>
         ${art ? `<img src="${art}" alt="">` : ''}
         <div class="tile-cap"><b>${escapeHtml(t.album || '')}</b><span>${escapeHtml(t.codec || t.container || '')}</span></div>
       </div>
@@ -2281,7 +2488,7 @@ async function openTrackDialog(id) {
       await deleteTrackIds([t.id], `"${t.title}"`);
     }
   };
-  dlg.showModal();
+  openModal();
 }
 
 /* ================================ settings ================================ */
@@ -2553,7 +2760,7 @@ function sendTracks(ids, label) {
     if (act === 'zip') { dlg.close(); packBundle(ids, label); }
   };
   if (dlg.open) dlg.close();
-  dlg.showModal();
+  openModal();
 }
 
 /**
@@ -2642,7 +2849,7 @@ function openSendDialog(file, label, count) {
     }
   };
   if (dlg.open) dlg.close();
-  dlg.showModal();
+  openModal();
 }
 
 /* =================================== beam ================================== */
@@ -2772,7 +2979,7 @@ async function openBeam({ host = true, only = null, label = '', code = '' } = {}
     // whole button then looks like it does nothing at all.
     if (dlg.open) dlg.close();
     renderBeam();
-    dlg.showModal();
+    openModal();
     // Escape closes a <dialog> on its own; a session left running behind it
     // would keep sending into a dialog nobody can see.
     dlg.addEventListener('close', () => { if (beamUi) endBeam(); }, { once: true });
@@ -2870,10 +3077,14 @@ async function finishBeam(result) {
   // The tracks are already in, but the records they belong to are rebuilt from
   // them afterwards, and on a big sync that takes a moment. Say so rather than
   // claiming to be finished while the library is still being put in order.
-  beamUi.filing = !!(result.added || result.filled);
+  beamUi.filing = !!(result.added || result.filled || result.updated);
   renderBeam();
 
-  if (result.added || result.filled) {
+  // Corrections and record settings change nothing about which files are here,
+  // so they arrive without a single track being added — and still have to be
+  // filed. Records are rebuilt from their tracks first, because a corrected
+  // artist moves its tracks to a record that may not exist here yet.
+  if (result.added || result.filled || result.updated || result.albums?.length) {
     await lib.refreshAllAlbums();
     for (const a of result.albums || []) {
       try { await sync.commitAlbum(a.record, a.orderHashes); } catch { /* a record's name is not worth failing over */ }
@@ -3022,9 +3233,16 @@ function beamWaiting(u) {
 function beamReady(u) {
   const s = u.summary || { send: { items: [], bytes: 0, fills: 0 }, receive: { items: [], bytes: 0, fills: 0 }, shared: 0 };
   const remote = u.remote || { device: 'the other device', version: '?', tracks: 0 };
-  const line = (plan) => `${plan.items.length} track${plan.items.length === 1 ? '' : 's'}`
-    + (plan.bytes ? ` · ${fmtBytes(plan.bytes)}` : '')
-    + (plan.fills ? ` · ${plan.fills} waiting for audio` : '');
+  // Corrections are counted apart from tracks: they weigh nothing and they are
+  // not "a track you are missing", which is what the two lines above them mean.
+  const line = (plan) => {
+    const moves = plan.items.length - (plan.metas || 0);
+    return `${moves} track${moves === 1 ? '' : 's'}`
+      + (plan.bytes ? ` · ${fmtBytes(plan.bytes)}` : '')
+      + (plan.fills ? ` · ${plan.fills} waiting for audio` : '');
+  };
+  const edits = (plan) => (plan.metas
+    ? `${plan.metas} correction${plan.metas === 1 ? '' : 's'}` : '—');
 
   return `<h3>${escapeHtml(remote.device)}</h3>
     <p class="muted small">Offpress v${escapeHtml(remote.version)} · ${remote.tracks} track${remote.tracks === 1 ? '' : 's'}${u.path ? ` · ${escapeHtml(u.path)}` : ''}</p>
@@ -3032,6 +3250,8 @@ function beamReady(u) {
       <div>They lack</div><div>${line(s.send)}</div>
       <div>You lack</div><div>${line(s.receive)}</div>
       <div>In common</div><div>${s.shared} track${s.shared === 1 ? '' : 's'}</div>
+      <div>Edits to send</div><div>${edits(s.send)}</div>
+      <div>Edits to take</div><div>${edits(s.receive)}</div>
     </div>
     ${u.host ? `
       ${u.only ? '' : `<div class="field"><label>Direction</label>
@@ -3042,8 +3262,10 @@ function beamReady(u) {
         <p class="hint">Loudness targets, quality profile, artwork sizes and the whole look,
         including the backdrop picture. Volume, shuffle and the phone/desktop layout choices stay
         where they are.</p></div>
-      <p class="hint">Nothing here is ever removed: a beam only adds tracks the other side is
-      missing and fills in rows that have no audio yet.</p>
+      <p class="hint">Nothing here is ever removed: a beam adds tracks the other side is missing,
+      fills in rows that have no audio yet, and carries over corrections — a fixed artist, album,
+      title or cover, and a record's name, order and cover print. The more recent edit wins, so a
+      name fixed on one device does not have to be fixed again on the other.</p>
       <div class="actions">
         <button class="btn primary" data-act="start">${u.only ? 'Send them' : 'Start'}</button>
         <div class="grow"></div>
@@ -3069,6 +3291,7 @@ function beamDone(u) {
   const bits = [];
   if (r.added) bits.push(`${r.added} track${r.added === 1 ? '' : 's'} added here`);
   if (r.filled) bits.push(`${r.filled} filled in with audio`);
+  if (r.updated) bits.push(`${r.updated} corrected`);
   if (r.sent) bits.push(`${r.sent} sent`);
   if (r.settings) bits.push('settings taken');
   if (r.skipped) bits.push(`${r.skipped} already here`);

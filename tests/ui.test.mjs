@@ -2094,6 +2094,306 @@ try {
   eq('Send offers both roads', dialogs.ways.map((w) => w.act), ['beam', 'zip']);
   ok('with beaming available', dialogs.ways[0] && !dialogs.ways[0].disabled, dialogs.ways[0]?.name);
 
+  /* ---------- 14. the app opens on Records ----------
+     A library is a shelf of records before it is a list of files, so that is
+     what a cold start has to land on — including the "nothing here yet" screen,
+     which used to live only on the Tracks tab and so was invisible from the
+     view a new user actually arrived at. */
+  await page.evaluate(async () => { const dbm = await import('./js/db.js'); await dbm.wipe(); });
+  await page.goto(URL);
+  await bootWait();
+  const landing = await page.evaluate(() => ({
+    view: document.querySelector('.view.is-active')?.dataset.view,
+    tab: document.querySelector('.tab.is-active')?.dataset.view,
+    context: document.querySelector('#chrome-ctx').textContent.trim(),
+    emptyShown: getComputedStyle(document.querySelector('#albums-empty')).display !== 'none',
+    hasAdd: !!document.querySelector('#albums-empty #btn-empty-record'),
+  }));
+  eq('a cold start lands on Records', [landing.view, landing.tab], ['albums', 'albums']);
+  eq('...and says so in the chrome', landing.context, 'Records');
+  ok('an empty library explains itself from there', landing.emptyShown && landing.hasAdd);
+
+  await page.evaluate(MAKE_FILES);
+  await page.evaluate(async () => {
+    const files = await window.__mk('Back Tapes', ['01 one.wav', '02 two.wav']);
+    const dt = new DataTransfer();
+    for (const f of files) dt.items.add(f);
+    const input = document.querySelector('#file-input');
+    input.files = dt.files;
+    input.dispatchEvent(new Event('change'));
+  });
+  await waitFor(page, `document.querySelectorAll('#album-grid .album').length === 1`,
+    { timeout: 90000, label: 'the record lands on the grid' });
+  const filled = await page.evaluate(() =>
+    getComputedStyle(document.querySelector('#albums-empty')).display !== 'none');
+  ok('and gets out of the way once there is a record', !filled);
+
+  /* ---------- 15. Back walks the screens, not out of the app ----------
+     On a phone this is the most-pressed control there is, and it used to close
+     the app from wherever you happened to be standing: a record open, the
+     Now-playing screen up, and one press dropped the lot.
+
+     In its own browser, at phone size. The tab above has thirty full page loads
+     under it by now, and script-driven traversal in a stack that deep runs into
+     Chrome's skippable-entry heuristics — which says nothing about the app and
+     everything about the tab the tests have been sharing. A fresh tab is the
+     situation a person is actually in. */
+  const nav = await launch(URL, { port: 9334 });
+  try {
+    await nav.send('Emulation.setDeviceMetricsOverride',
+      { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+    await waitFor(nav, `document.querySelector('#build-info')?.textContent?.length > 0`, { label: 'second app boot' });
+    await nav.evaluate(MAKE_FILES);
+    await nav.evaluate(async () => {
+      const dbm = await import('./js/db.js');
+      await dbm.wipe();
+    });
+    await nav.goto(URL);
+    await waitFor(nav, `document.querySelector('#build-info')?.textContent?.length > 0`, { label: 'second app boot' });
+    await nav.evaluate(MAKE_FILES);
+    await nav.evaluate(async () => {
+      const files = await window.__mk('Back Tapes', ['01 one.wav', '02 two.wav']);
+      const dt = new DataTransfer();
+      for (const f of files) dt.items.add(f);
+      const input = document.querySelector('#file-input');
+      input.files = dt.files;
+      input.dispatchEvent(new Event('change'));
+    });
+    await waitFor(nav, `document.querySelectorAll('#album-grid .album').length === 1`,
+      { timeout: 90000, label: 'a record to walk into' });
+
+    const walk = await nav.evaluate(async () => {
+      const settle = (ms = 220) => new Promise((r) => setTimeout(r, ms));
+      const where = () => ({
+        view: document.querySelector('.view.is-active')?.dataset.view,
+        album: !document.querySelector('#album-detail').classList.contains('hidden'),
+        now: !document.querySelector('#now').hidden,
+        depth: history.state?.offpress || 0,
+      });
+      const back = async () => { history.back(); await settle(); };
+      const out = {};
+
+      document.querySelector('#album-grid .album').click();          // grid → record
+      await settle();
+      out.inRecord = where();
+      document.querySelector('#album-detail .track').click();        // play something
+      await settle(900);
+      document.querySelector('.t-now').click();                      // → Now playing
+      await settle(320);
+      out.playing = where();
+
+      await back();
+      out.afterOne = where();
+      await back();
+      out.afterTwo = where();
+      return out;
+    }, { timeout: 60000 });
+
+    ok('opening a record is a screen of its own', walk.inRecord.album);
+    eq('...one history step deep', walk.inRecord.depth, 1);
+    ok('the mini transport opens the Now-playing screen', walk.playing.now);
+    eq('...a second step on top of the record', walk.playing.depth, 2);
+    eq('Back closes the Now screen and leaves the record open',
+      [walk.afterOne.now, walk.afterOne.album], [false, true]);
+    eq('...and only the next press closes the record',
+      [walk.afterTwo.now, walk.afterTwo.album], [false, false]);
+
+    /* Views are screens too: Settings opened from a record is one step, and Back
+       puts you back on the record rather than on the tab you started the session
+       from. */
+    const views = await nav.evaluate(async () => {
+      const settle = (ms = 220) => new Promise((r) => setTimeout(r, ms));
+      const out = {};
+      document.querySelector('#album-grid .album').click();
+      await settle();
+      document.querySelector('.tab[data-view="settings"]').click();
+      await settle();
+      out.away = document.querySelector('.view.is-active')?.dataset.view;
+      history.back();
+      await settle();
+      out.view = document.querySelector('.view.is-active')?.dataset.view;
+      out.album = !document.querySelector('#album-detail').classList.contains('hidden');
+      return out;
+    });
+    eq('going to Settings from a record leaves it behind', views.away, 'settings');
+    eq('and Back returns to exactly the record you left',
+      [views.view, views.album], ['albums', true]);
+  } finally {
+    await nav.close();
+  }
+
+  /* ---------- 16. a record printed its own way ----------
+     Settings picks a treatment for the whole library; a record is allowed to
+     disagree, and its choice has to reach every place its cover is drawn. */
+  await page.goto(URL);
+  await bootWait();
+  const printed = await page.evaluate(async () => {
+    const settle = (ms = 250) => new Promise((r) => setTimeout(r, ms));
+    const dbm = await import('./js/db.js');
+    document.querySelector('.tab[data-view="settings"]').click();
+    await settle();
+    document.querySelector('#set-cover-filter [data-cover-filter="mono"]').click();
+    await settle();
+
+    document.querySelector('.tab[data-view="albums"]').click();
+    await settle();
+    const card = document.querySelector('#album-grid .album');
+    const appWide = getComputedStyle(card.querySelector('.tile img')).filter;
+
+    // Set this one record to something else, from the grid's own menu.
+    card.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 30, clientY: 30 }));
+    await settle(150);
+    const item = [...document.querySelectorAll('.menu-item')].find((b) => b.textContent.includes('Cover print'));
+    const offered = !!item;
+    item?.click();
+    await settle();
+    document.querySelector('#dlg [data-afilter="dither"]')?.click();
+    await settle(120);
+    document.querySelector('#dlg [data-act="save"]')?.click();
+    await settle(400);
+
+    const grid = document.querySelector('#album-grid .album');
+    const own = getComputedStyle(grid.querySelector('.tile img')).filter;
+    const stored = (await dbm.getAll('albums'))[0].coverFilter;
+
+    grid.click();                                  // and inside the record itself
+    await settle();
+    const hero = getComputedStyle(document.querySelector('#album-detail .hero .tile img')).filter;
+    const row = getComputedStyle(document.querySelector('#album-detail .track .tile img')).filter;
+    const selected = document.querySelector('#album-cover-filter')?.value;
+    return { appWide, offered, own, stored, hero, row, selected };
+  });
+  ok('a record can be printed its own way from the grid', printed.offered);
+  eq('...and it is remembered on the record', printed.stored, 'dither');
+  ok('the app-wide choice still prints everything else', /grayscale/.test(printed.appWide), printed.appWide);
+  ok('...and the record overrules it on its own tile', /cover-dither/.test(printed.own), printed.own);
+  ok('...on its hero', /cover-dither/.test(printed.hero), printed.hero);
+  ok('...and on every one of its rows', /cover-dither/.test(printed.row), printed.row);
+  eq('its Configure menu shows what it is set to', printed.selected, 'dither');
+
+  /* ---------- 17. an edit made here reaches the other device ----------
+     The reason any of this exists: fixing an artist's name on the desktop and
+     then having to fix it again on the phone. Driven over the real protocol via
+     loopback, with the far side's view of the library rewound to before the
+     edit — which is exactly what the other device's inventory would say. */
+  const edits = await page.evaluate(async () => {
+    const dbm = await import('./js/db.js');
+    const lib = await import('./js/library.js');
+    const beam = await import('./js/beam.js');
+    const sync = await import('./js/sync.js');
+
+    const all = await dbm.getAll('tracks');
+    const track = all[0];
+    const before = { ...track };
+    // What the far end still believes: every row as it was, none of them edited.
+    // Anything missing from this list would be a transfer rather than a
+    // correction, which is a different thing and is tested above.
+    const stale = all.map((t) => sync.trackFingerprint({ ...t, editedAt: 0 }));
+
+    await lib.updateTrack(track.id, { title: 'Right Title', artist: 'Right Artist' });
+    const edited = await dbm.get('tracks', track.id);
+
+    const { host, guest } = beam.loopback();
+    const failed = new Promise((_, reject) => { host.on('error', reject); guest.on('error', reject); });
+    await Promise.race([Promise.all([
+      new Promise((r) => host.on('ready', r)), new Promise((r) => guest.on('ready', r)),
+    ]), failed]);
+
+    // Both halves share this one database, so the guest is told the far side
+    // holds the old row: that is what makes the host offer the correction.
+    host.theirs = { ...host.theirs, tracks: stale };
+    const plan = sync.planPush(host.mine, host.theirs);
+
+    const done = new Promise((r) => host.on('done', r));
+    await host.start({ mode: 'push' });
+    const result = await Promise.race([done, failed]);
+
+    return {
+      plan: plan.items.map((t) => t.reason),
+      metas: plan.metas,
+      bytes: plan.bytes,
+      sent: result.sent,
+      stampedByEdit: (edited.editedAt || 0) > (before.editedAt || 0),
+      title: edited.title,
+    };
+  }, { timeout: 60000 });
+  eq('an edited row is offered as a correction, not a transfer', edits.plan, ['meta']);
+  eq('...one of them', edits.metas, 1);
+  eq('...carrying no audio at all', edits.bytes, 0);
+  eq('...and it goes over the wire', edits.sent, 1);
+  ok('editing a track stamps when it was edited', edits.stampedByEdit);
+  eq('and the edit itself stuck', edits.title, 'Right Title');
+
+  /* Applying one: commitTrack against a row this device has not touched. */
+  const applied = await page.evaluate(async () => {
+    const dbm = await import('./js/db.js');
+    const lib = await import('./js/library.js');
+    const sync = await import('./js/sync.js');
+    const out = {};
+
+    const [local] = await dbm.getAll('tracks');
+    // Pretend this device never touched it, and something newer arrives.
+    local.editedAt = 1000;
+    local.title = 'Old Title';
+    local.artist = 'Old Artist';
+    local.album = 'Old Record';
+    local.albumKey = 'old artist :: old record';
+    local.loudness = { integratedLufs: -11.1, hist: null };
+    await dbm.put('tracks', local);
+
+    const incoming = {
+      ...local, id: 'remote-id',
+      title: 'Fixed Title', artist: 'Fixed Artist', artists: ['Fixed Artist'],
+      album: 'Fixed Record', albumArtist: '', year: '1979', genre: 'Dub',
+      editedAt: 2000,
+      loudness: { integratedLufs: -99, hist: null },   // must NOT be taken
+    };
+    out.what = await sync.commitTrack(incoming, {});
+    const after = await dbm.get('tracks', local.id);
+    out.title = after.title;
+    out.artist = after.artist;
+    out.album = after.album;
+    out.year = after.year;
+    out.rehomed = after.albumKey;
+    out.keptMeasurement = after.loudness?.integratedLufs;
+    out.keptId = after.id === local.id;
+
+    // ...and the reverse: an older edit arriving must change nothing.
+    out.stale = await sync.commitTrack({ ...incoming, title: 'Stale', editedAt: 1500 }, {});
+    out.stillFixed = (await dbm.get('tracks', local.id)).title;
+
+    // A record's own settings, decided the same way.
+    await lib.refreshAllAlbums();
+    const [album] = await dbm.getAll('albums');
+    out.albumTook = await sync.commitAlbum({
+      ...sync.albumFingerprint(album), coverFilter: 'posterize', editedAt: Date.now() + 1000,
+    });
+    out.albumFilter = (await dbm.get('albums', album.key)).coverFilter;
+    out.albumIgnoredStale = await sync.commitAlbum({
+      ...sync.albumFingerprint(album), coverFilter: 'sepia', editedAt: 1,
+    });
+    out.albumStillFilter = (await dbm.get('albums', album.key)).coverFilter;
+
+    // And a rebuild from the tracks must not quietly drop it again.
+    await lib.refreshAlbum(album.key);
+    out.survivesRebuild = (await dbm.get('albums', album.key)).coverFilter;
+    return out;
+  }, { timeout: 60000 });
+  eq('a newer edit is taken', applied.what, 'updated');
+  eq('...over the title', applied.title, 'Fixed Title');
+  eq('...the artist', applied.artist, 'Fixed Artist');
+  eq('...the album, year and everything a person types', [applied.album, applied.year], ['Fixed Record', '1979']);
+  eq('...moving the track to the record its new names say', applied.rehomed, 'fixed artist :: fixed record');
+  eq('but never over a measurement this device made itself', applied.keptMeasurement, -11.1);
+  ok('and the row stays the row it was', applied.keptId);
+  eq('an older edit is refused', applied.stale, 'skipped');
+  eq('...leaving the newer one alone', applied.stillFixed, 'Fixed Title');
+  ok('a record takes a newer cover print', applied.albumTook);
+  eq('...and stores it', applied.albumFilter, 'posterize');
+  ok('an older one is refused', !applied.albumIgnoredStale);
+  eq('...leaving the newer one alone', applied.albumStillFilter, 'posterize');
+  eq('and rebuilding the record from its tracks keeps it', applied.survivesRebuild, 'posterize');
+
   console.log('\n--- console output from the page ---');
   page.dumpLogs();
   console.log(fails ? `\n${fails} check(s) failed` : '\nall UI checks passed');

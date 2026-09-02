@@ -400,16 +400,25 @@ button.tile:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
 .tile img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
 .tile img.is-empty{display:none}
 
-/* Cover filters — Settings → Appearance. One selector list covers every place a
-   real cover is drawn: the grid, the record hero, the track rows, the details
-   dialog, the transport and the phone's Now-playing screen. The printed base a
-   coverless record falls back to is left alone; it is already flat ink. */
+/* Cover filters — Settings → Appearance, and per record from its Configure menu.
+   One rule covers every place a real cover is drawn: the grid, the record hero,
+   the track rows, the details dialog, the transport and the phone's Now-playing
+   screen. The printed base a coverless record falls back to is left alone; it is
+   already flat ink.
+
+   The treatment travels as an inherited custom property rather than as a
+   descendant selector off <html>. That is what lets one record override the
+   app-wide choice: the closest ancestor carrying [data-cover-filter] wins by
+   being nearer in the tree, and specificity — where html[...] would always have
+   beaten a bare attribute — never comes into it. */
 .filter-defs{position:absolute;width:0;height:0;overflow:hidden}
-html[data-cover-filter=mono] :is(.tile,.t-art) img{filter:grayscale(1) contrast(108%)}
-html[data-cover-filter=sepia] :is(.tile,.t-art) img{filter:sepia(.78) saturate(125%) contrast(104%)}
-html[data-cover-filter=duotone] :is(.tile,.t-art) img{filter:url(#cover-duotone)}
-html[data-cover-filter=posterize] :is(.tile,.t-art) img{filter:url(#cover-posterize)}
-html[data-cover-filter=dither] :is(.tile,.t-art) img{filter:url(#cover-dither)}
+[data-cover-filter=none]{--cover-fx:none}
+[data-cover-filter=mono]{--cover-fx:grayscale(1) contrast(108%)}
+[data-cover-filter=sepia]{--cover-fx:sepia(.78) saturate(125%) contrast(104%)}
+[data-cover-filter=duotone]{--cover-fx:url(#cover-duotone)}
+[data-cover-filter=posterize]{--cover-fx:url(#cover-posterize)}
+[data-cover-filter=dither]{--cover-fx:url(#cover-dither)}
+:is(.tile,.t-art) img{filter:var(--cover-fx, none)}
 /* With a real cover in place the printed grid would just dirty it. */
 .tile:has(img:not(.is-empty))::before{display:none}
 .tile:has(img:not(.is-empty)) .tile-cap{display:none}
@@ -623,7 +632,7 @@ html[data-cover-filter=dither] :is(.tile,.t-art) img{filter:url(#cover-dither)}
    the first render is on screen, so nothing that says "empty" can be drawn
    until we actually know it is. */
 
-html[data-boot=loading] :is(#tracks-empty,#tracks-head,#album-grid,.quality-summary,#report-body){
+html[data-boot=loading] :is(#tracks-empty,#albums-empty,#tracks-head,#album-grid,.quality-summary,#report-body){
   display:none !important;
 }
 
@@ -681,10 +690,10 @@ i.sk{display:block;height:9px}
 
 /* The real thing, arriving. The attribute changes exactly once, so this plays
    on the first render and never again — later re-renders are not entrances. */
-html[data-boot=ready] :is(#track-list,#tracks-head,#tracks-empty,#album-grid){
+html[data-boot=ready] :is(#track-list,#tracks-head,#tracks-empty,#albums-empty,#album-grid){
   animation:boot-in .3s cubic-bezier(.2,.7,.3,1) both;
 }
-html[data-boot=ready] #tracks-empty{animation-duration:.42s}
+html[data-boot=ready] :is(#tracks-empty,#albums-empty){animation-duration:.42s}
 @keyframes boot-in{from{opacity:0;transform:translateY(6px)}}
 
 /* A cover is fetched out of the store and decoded after its row is already
@@ -700,7 +709,7 @@ html[data-boot=ready] #tracks-empty{animation-duration:.42s}
 @media (prefers-reduced-motion:reduce){
   .sk::after{animation:none}
   .skeleton{animation-duration:.01ms;animation-delay:.16s}
-  html[data-boot=ready] :is(#track-list,#tracks-head,#tracks-empty,#album-grid),
+  html[data-boot=ready] :is(#track-list,#tracks-head,#tracks-empty,#albums-empty,#album-grid),
   :is(.track,.album,.hero) .tile img:not(.is-empty){animation:none}
 }
 

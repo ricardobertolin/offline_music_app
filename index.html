@@ -121,8 +121,8 @@
       <div class="rail-label">Collection</div>
       <!-- Dashes, not zeros: a zero is a count, and until the library has been
            read there is no count to show. renderRail() writes the real ones. -->
-      <button class="tab" data-view="albums" role="tab"><span>Records</span><em id="n-albums">—</em></button>
-      <button class="tab is-active" data-view="tracks" role="tab"><span>Tracks</span><em id="n-tracks">—</em></button>
+      <button class="tab is-active" data-view="albums" role="tab"><span>Records</span><em id="n-albums">—</em></button>
+      <button class="tab" data-view="tracks" role="tab"><span>Tracks</span><em id="n-tracks">—</em></button>
       <button class="tab" data-view="quality" role="tab"><span>Quality</span><em id="n-quality">—</em></button>
       <button class="tab" data-view="report" role="tab"><span>Report</span><em id="n-report">—</em></button>
     </nav>
@@ -147,7 +147,7 @@
   <main class="stage" id="main">
 
     <!-- TRACKS -->
-    <section class="view is-active" data-view="tracks">
+    <section class="view" data-view="tracks">
       <div class="stage-head">
         <div class="eyebrow">Collection</div>
         <h1 class="display">Tracks</h1>
@@ -243,8 +243,10 @@
       </div>
     </section>
 
-    <!-- RECORDS (albums) -->
-    <section class="view" data-view="albums">
+    <!-- RECORDS (albums) — where the app opens. A library is a shelf of records
+         before it is a list of files, and the grid is the only view that says
+         what is in it at a glance. -->
+    <section class="view is-active" data-view="albums">
       <div id="albums-head" class="stage-head">
         <div class="eyebrow">Collection</div>
         <h1 class="display">Records</h1>
@@ -263,6 +265,31 @@
         <div class="album"><div class="tile sk"></div><i class="sk sk-1"></i><i class="sk sk-2"></i></div>
         <div class="album"><div class="tile sk"></div><i class="sk sk-1"></i><i class="sk sk-2"></i></div>
         <div class="album"><div class="tile sk"></div><i class="sk sk-1"></i><i class="sk sk-2"></i></div>
+      </div>
+      <!-- The landing view, so this is the first thing a new library says. It
+           carries its own copy of the Add menu rather than pointing at the
+           header's: the middle of the page is the only place anyone is looking. -->
+      <div id="albums-empty" class="empty">
+        <h2 class="display">Nothing pressed yet</h2>
+        <p>Add a folder, a <b>.zip</b> or single tracks. Everything is stored on this device and nothing is uploaded.</p>
+        <p>Each file is decoded once to measure <b>EBU R128 loudness</b>, true peak and spectral quality.</p>
+        <div class="row">
+          <div class="menu-wrap">
+            <button id="btn-empty-record" class="btn primary" aria-haspopup="true" aria-expanded="false">Add album</button>
+            <div id="empty-record-menu" class="menu center hidden" role="menu">
+              <button class="menu-item" data-source="folder" role="menuitem">
+                <b>From a folder</b><span>Every audio file in it, in folder order</span>
+              </button>
+              <button class="menu-item" data-source="zip" role="menuitem">
+                <b>From a .zip archive</b><span>Unpacked here — nothing is uploaded</span>
+              </button>
+              <button class="menu-item needs-link hidden" data-source="link" role="menuitem">
+                <b>Link a folder</b><span>Read it in place — no second copy on disk</span>
+              </button>
+            </div>
+          </div>
+          <button class="btn" data-act="track">Add track</button>
+        </div>
       </div>
       <div id="album-detail" class="album-detail hidden"></div>
     </section>
@@ -330,7 +357,8 @@
           <p class="hint">A print treatment over every cover — the grid, the record hero, the
           track rows and the transport. <b>Duotone</b> prints them in your accent colour.
           Only how they are shown: the stored picture is never changed, so switching back
-          costs nothing.</p>
+          costs nothing. Any record can overrule this from its own <b>Configure → Cover
+          print</b>, or by right-clicking it in the grid.</p>
         </div>
         <label class="switch"><input id="set-tint" type="checkbox"><span>Tint records without a cover</span></label>
         <label class="switch"><input id="set-spin" type="checkbox"><span>Spin the press while playing</span></label>
@@ -493,6 +521,11 @@
         missing — audio, covers and every measurement — and nothing that is already there moves
         again. Run it twice and the second run has nothing to do; stop it halfway and starting
         again picks up where it left off.</p>
+        <p class="hint">Corrections travel too, so a name fixed on the desktop does not have to be
+        fixed again on the phone: titles, artists, albums, track numbers, years, genres and covers,
+        and a record's own name, artist, track order and cover print. Whichever device edited a
+        row most recently wins, and a row nobody has ever edited never overwrites one that was.
+        Measurements are not traded — each device trusts its own analysis of its own copy.</p>
         <p class="hint">Nothing is uploaded: the music goes browser to browser. Only the
         introduction — a few hundred bytes saying "here is where I am" — passes through a
         signalling broker, and on the same Wi-Fi the transfer runs at network speed.</p>

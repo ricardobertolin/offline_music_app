@@ -6,7 +6,9 @@ the same normalized square.** Everything happens on the device: no uploads, no s
 no accounts. The service worker makes the app itself work with no network at all.
 
 Two devices can be kept in step without one either: **Beam & sync** opens a direct
-connection between the two browsers and moves only what is missing, audio included.
+connection between the two browsers and moves only what is missing, audio included —
+and carries corrections both ways, so a name fixed on the desktop does not have to be
+fixed again on the phone.
 
 Static files only, so it deploys to GitHub Pages as-is.
 
@@ -63,6 +65,15 @@ corners, one accent colour — the **Offpress** design.
   live counts, the library filters, and a footer readout of what is cached and what the
   encoder is aimed at. Settings sits at its foot. Under 860 px the rail folds into a
   scrolling strip under the header, and the header's search drops to its own line.
+- The app **opens on Records**. A library is a shelf of records before it is a list of
+  files, and the grid is the only view that says what is in it without being read. A new
+  library gets its "nothing pressed yet" screen there, with the same two ways in.
+- **Back is a real back.** Every screen that opens on top of another — a record over the
+  grid, Settings over a record, the Now-playing screen over all of it — pushes one history
+  entry, so Android's back button and the browser's back arrow take the top screen off
+  instead of leaving the app from wherever you happened to be standing. A screen closed by
+  its own button walks history back with it, so the two never drift apart. Nothing goes in
+  the URL: these are screens within one page, not addresses.
 - The **transport** carries the mini cover (with the press turning while it plays), the
   transport buttons, the applied normalization gain, and the loudness-envelope scrubber.
 - The **press turns the cover itself**. Where a record has artwork, the artwork is cut to
@@ -101,7 +112,7 @@ corners, one accent colour — the **Offpress** design.
   in a row now plays the row, like the rest of the row.
 - **Right-clicking** anywhere in the app gives the app's menu, not the browser's. On a
   track: play, details, edit, set artwork, re-analyze, normalize, send, delete. On a record
-  or its hero: open, play, shuffle, rename, set cover, send, delete. On the transport or
+  or its hero: open, play, shuffle, rename, set cover, cover print, send, delete. On the transport or
   the Now-playing screen: whatever is playing. Anywhere else: transport controls, the views,
   the two ways to add music, and a reload. Text fields keep the native menu, because
   cut/copy/paste lives nowhere else. A long-press does the same thing on a phone.
@@ -123,6 +134,13 @@ corners, one accent colour — the **Offpress** design.
   picture down but it cannot posterize, dither or duotone one, so the last three are SVG
   filters defined in `index.html`. Display only: the stored artwork is never altered, so a
   backup still carries the original picture and **Off** puts it straight back.
+- **Any record can overrule that**, from its own **⚙ Configure → Cover print** or by
+  right-clicking it in the grid. The choice is stored on the record, travels in a backup
+  and over a beam, and reaches everywhere that record's cover is drawn — its tile, its
+  hero, its rows, the transport and the Now-playing screen — while every other record
+  carries on following Settings. The treatment travels as an inherited custom property
+  rather than a descendant selector, which is what lets a record win by being nearer its
+  own cover in the tree instead of by out-specifying `<html>`.
 - **Settings → Backdrop** puts a wallpaper behind the whole window. *Grooves*, *Halftone*
   and *Sleeve* are drawn in CSS from the accent colour and cost nothing. *Image* uses a
   picture you choose: it is downscaled to 1920 px on the longest edge, stored in IndexedDB
@@ -141,8 +159,8 @@ corners, one accent colour — the **Offpress** design.
 Click a record to open just its tracks. Inside:
 
 - **Play** and **Shuffle** are the only two buttons. Everything else lives behind
-  **⚙ Configure**: track order, edit name and artist, set cover, normalize quality,
-  delete record.
+  **⚙ Configure**: track order, cover print, edit name and artist, set cover, normalize
+  quality, delete record.
 - **Track order** defaults to **folder order** — the order the files were imported in,
   compared numerically, so `2 - x` comes before `10 - y`. Tags are frequently missing or
   wrong; the folder rarely is. You can switch to track number from tags, to title, or
@@ -260,7 +278,8 @@ settings travel too.
 
 What makes this worth having over carrying a `.zip` across is that a sync is a diff, not a
 snapshot. Both sides first exchange one small line per track — the content hash, the size,
-and whether the audio is actually there — and only the difference moves. So:
+whether the audio is actually there, and when a person last corrected it — and only the
+difference moves. So:
 
 - Running it twice sends nothing the second time.
 - Stopping halfway loses nothing that already arrived: each track is committed as it lands,
@@ -270,8 +289,41 @@ and whether the audio is actually there — and only the difference moves. So:
 - Covers are matched by picture and size, so an album's artwork crosses once.
 - A track order you dragged travels as content hashes and is remapped onto the rows on the
   other side, which carry their own ids.
-- A sync only ever adds. Deleting a record here never deletes it there — "I removed that
-  album" and "I have not imported it yet" look identical from across the wire.
+- A sync only ever adds *files*. Deleting a record here never deletes it there — "I removed
+  that album" and "I have not imported it yet" look identical from across the wire.
+
+**Edits travel too**, which is the answer to fixing an artist's name on the desktop and
+then having to fix it again on the phone. A correction to a track the other device already
+holds goes over as tags and, if it changed, a cover — not a byte of audio, because the
+content hash already said the file is the same file. What travels:
+
+- On a track: title, artist (the whole list, guests included), album, album artist, track
+  and disc number, year, genre, and the artwork it points at. Changing the artist or the
+  album moves the track to the record its new names say it belongs on, on both devices.
+- On a record: its name, its artist, its track order and its cover print.
+
+The rule is **the more recent edit wins**, and "recent" means when a person last touched
+that row — not who spoke last. Every track and every record carries an `editedAt` stamped
+by hand-edits alone: renaming, retagging, setting a cover, dragging an order, choosing a
+cover print. A re-measure, an import, an artwork resize and a beam that only delivered a
+file never stamp it. Three consequences worth stating, because they are the ones that
+would cost you work if they went the other way:
+
+- A row nobody has ever edited (stamp 0) cannot overwrite one that has been. A freshly
+  imported library meeting a carefully corrected one takes the corrections and offers
+  nothing back.
+- The stale side never argues. Beaming twice in a row, or beaming back the other way,
+  changes nothing the second time — the diff is empty.
+- **Measurements are never traded.** Loudness, quality, duration and true peak stay
+  whatever this device measured from its own copy of the file. It analyzed those bytes; it
+  is right about them, and a second opinion from across the wire is worth nothing.
+
+Both dialogs show the split before anything moves: how many tracks each side lacks, and
+separately how many corrections each side is about to hand over.
+
+A record whose settings changed but whose tracks did not still travels — renaming a record
+or changing how its cover is printed moves no audio at all, and would otherwise never
+reach the other device.
 
 Settings travel as a separate choice: loudness targets, quality profile, artwork sizes and
 the whole appearance including the backdrop picture. Volume, shuffle, repeat and the
